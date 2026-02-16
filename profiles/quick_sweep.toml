@@ -1,0 +1,22 @@
+[profile]
+name = "quick_sweep"
+description = "Fast daily cleanup — caches, temp files, trash"
+aggression = "low"
+
+[targets]
+system_caches = true
+user_caches = true
+logs = true
+temp_files = true
+trash = true
+crash_reports = false
+mail_attachments = false
+downloaded_dmgs = false
+large_files = false
+
+[targets.dev]
+# All dev targets disabled for quick sweep
+
+[thresholds]
+stale_days = 30
+large_file_mb = 500

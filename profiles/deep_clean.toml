@@ -1,0 +1,35 @@
+[profile]
+name = "deep_clean"
+description = "Thorough cleanup — everything including large files and app leftovers"
+aggression = "high"
+
+[targets]
+system_caches = true
+user_caches = true
+logs = true
+temp_files = true
+trash = true
+crash_reports = true
+mail_attachments = true
+downloaded_dmgs = true
+large_files = true
+
+[targets.dev]
+xcode_derived_data = true
+xcode_archives = true
+ios_simulators = true
+docker_dangling = true
+node_modules_stale = true
+venv = true
+homebrew_cache = true
+pip_cache = true
+npm_cache = true
+yarn_cache = true
+cocoapods_cache = true
+cargo_cache = true
+gradle_cache = true
+conda_cache = true
+
+[thresholds]
+stale_days = 14
+large_file_mb = 100

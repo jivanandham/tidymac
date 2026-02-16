@@ -1,0 +1,70 @@
+[package]
+name = "tidymac"
+version = "1.0.0"
+edition = "2021"
+description = "A developer-aware, privacy-first Mac cleanup utility"
+authors = ["Jeeva"]
+license = "MIT"
+readme = "README.md"
+keywords = ["macos", "cleanup", "cache", "developer", "utility"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+# CLI framework
+clap = { version = "4", features = ["derive", "color", "env"] }
+clap_complete = "4"
+
+# File system
+walkdir = "2"
+rayon = "1.8"
+ignore = "0.4"
+glob = "0.3"
+dirs = "5"
+
+# Hashing
+sha2 = "0.10"
+image_hasher = "3"
+image = "0.25"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Terminal UI
+ratatui = "0.29"
+crossterm = "0.28"
+colored = "2"
+indicatif = "0.17"
+
+# macOS specifics
+plist = "1"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytesize = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+
+[lib]
+name = "tidymac"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "tidymac"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

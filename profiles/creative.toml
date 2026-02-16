@@ -1,0 +1,22 @@
+[profile]
+name = "creative"
+description = "Clean up after creative work — render caches, previews, scratch files"
+aggression = "medium"
+
+[targets]
+system_caches = true
+user_caches = true
+logs = true
+temp_files = true
+trash = true
+crash_reports = true
+mail_attachments = true
+downloaded_dmgs = true
+large_files = false
+
+[targets.dev]
+# Dev targets mostly disabled for creative profile
+
+[thresholds]
+stale_days = 14
+large_file_mb = 200

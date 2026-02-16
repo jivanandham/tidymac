@@ -1,0 +1,36 @@
+[profile]
+name = "developer"
+description = "Full developer cache cleanup — Xcode, Docker, npm, pip, and more"
+aggression = "medium"
+
+[targets]
+system_caches = true
+user_caches = true
+logs = true
+temp_files = true
+trash = true
+crash_reports = true
+mail_attachments = false
+downloaded_dmgs = true
+large_files = false
+
+[targets.dev]
+xcode_derived_data = true
+xcode_archives = false       # Keep — may need for debugging shipped versions
+ios_simulators = true
+docker_dangling = true
+docker_all_images = false    # Too aggressive
+node_modules_stale = true    # Only if project not modified in 30+ days
+venv = true
+homebrew_cache = true
+pip_cache = true
+npm_cache = true
+yarn_cache = true
+cocoapods_cache = true
+cargo_cache = true
+gradle_cache = true
+conda_cache = true
+
+[thresholds]
+stale_days = 30
+large_file_mb = 500
