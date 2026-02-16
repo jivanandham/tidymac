@@ -318,7 +318,7 @@ cargo test --test hasher_test # Duplicate detection tests
 - [x] **SwiftUI GUI** — Native macOS app wrapping the Rust core via FFI
 - [ ] **Incremental scan caching** — Only re-scan changed files
 - [ ] **Docker integration** — `docker system prune` integration
-- [ ] **Homebrew formula** — `brew install tidymac`
+- [x] **Homebrew formula** — `brew tap jivanandham/tidymac && brew install tidymac`
 - [ ] **Scheduled cleanup** — Automated profiles via launchd
 - [ ] **Menu bar app** — Quick-access from the macOS menu bar
 
