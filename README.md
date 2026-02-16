@@ -1,16 +1,18 @@
 # 🧹 TidyMac
 
-**A developer-aware, privacy-first Mac cleanup utility built in Rust.**
+**A developer-aware, privacy-first Mac cleanup utility built in Rust with a native SwiftUI interface.**
 
-[![CI](https://github.com/jeevakrishnasamy/tidymac/actions/workflows/ci.yml/badge.svg)](https://github.com/jeevakrishnasamy/tidymac/actions)
+[![CI](https://github.com/jivanandham/tidymac/actions/workflows/ci.yml/badge.svg)](https://github.com/jivanandham/tidymac/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
+[![Swift](https://img.shields.io/badge/Swift-5.9%2B-F05138.svg)](https://swift.org)
+[![macOS](https://img.shields.io/badge/macOS-14%2B-000000.svg)](https://www.apple.com/macos/)
 
 ---
 
 ## Why TidyMac?
 
-Mainstream cleaners like CleanMyMac X, OnyX, and AppCleaner treat every Mac the same. They don't understand developer workflows — and that's where 20–50GB of reclaimable space hides.
+Mainstream cleaners like CleanMyMac X, OnyX, and AppCleaner treat every Mac the same. They don't understand developer workflows — and that's where **20–50GB of reclaimable space** hides.
 
 TidyMac was built for developers. It intelligently detects and cleans **14+ developer tool caches** (Xcode DerivedData, Docker images, `node_modules`, Python venvs, Homebrew, pip, Cargo, CocoaPods, Gradle, and more), while providing safety features no other cleaner offers.
 
@@ -19,6 +21,7 @@ TidyMac was built for developers. It intelligently detects and cleans **14+ deve
 | Feature | TidyMac | CleanMyMac X | AppCleaner |
 |---------|---------|-------------|------------|
 | Developer cache detection | ✅ 14+ tools | ❌ | ❌ |
+| Native SwiftUI GUI | ✅ | N/A | N/A |
 | Dry-run before cleaning | ✅ | ❌ | ❌ |
 | Undo with 7-day recovery | ✅ | ❌ | ❌ |
 | Smart profiles | ✅ 4 presets | ❌ | ❌ |
@@ -32,25 +35,82 @@ TidyMac was built for developers. It intelligently detects and cleans **14+ deve
 
 ## Quick Start
 
+### Option 1: CLI (Rust)
+
 ```bash
-# Build from source
-git clone https://github.com/jeevakrishnasamy/tidymac.git
+# Clone & build
+git clone https://github.com/jivanandham/tidymac.git
 cd tidymac
 cargo build --release
 
 # Install to PATH
 cp target/release/tidymac /usr/local/bin/
 
-# Initialize
+# Initialize & scan
 tidymac config init
-
-# Your first scan
 tidymac scan --profile developer
+```
+
+### Option 2: Native macOS App (SwiftUI)
+
+```bash
+# Clone & build the Rust FFI library first
+git clone https://github.com/jivanandham/tidymac.git
+cd tidymac
+cargo build --release
+
+# Build the FFI bridge (copies dylib + headers)
+./scripts/build-ffi.sh
+
+# Run the SwiftUI app
+cd TidyMac
+swift run TidyMacApp
+```
+
+> **Note:** The SwiftUI app requires macOS 14+ (Sonoma) and Swift 5.9+.
+
+---
+
+## SwiftUI App
+
+TidyMac includes a **native macOS SwiftUI application** that wraps the Rust core engine via C FFI bindings.
+
+### App Views
+
+| View | Description |
+|------|-------------|
+| **Dashboard** | Overview of disk usage and quick actions |
+| **Scan** | Run and visualize scan results |
+| **Apps** | Browse installed apps and their footprint |
+| **Docker** | Manage Docker images, containers, and volumes |
+| **Privacy** | Audit browser cookies, history, and trackers |
+| **History** | Review past cleanup sessions with undo |
+| **Settings** | Configure profiles, thresholds, and preferences |
+
+### Architecture
+
+The SwiftUI app communicates with the Rust backend through a C FFI bridge:
+
+```
+┌──────────────────────────────┐
+│     SwiftUI App (TidyMac)    │
+│  Dashboard │ Scan │ Apps │…  │
+├──────────────────────────────┤
+│     TidyMacBridge.swift      │  ← Swift ↔ C bridge
+├──────────────────────────────┤
+│    TidyMacFFI (C headers)    │  ← module.modulemap + tidymac.h
+├──────────────────────────────┤
+│   libtidymac.dylib (Rust)    │  ← Compiled Rust core
+├──────────────────────────────┤
+│       Rust Core Engine       │
+│  Scanner │ Cleaner │ Hasher  │
+│  Privacy │ Profiles │ Apps   │
+└──────────────────────────────┘
 ```
 
 ---
 
-## Usage
+## CLI Usage
 
 ### Scanning
 
@@ -85,7 +145,7 @@ tidymac dup ~/Pictures --perceptual       # Find visually similar photos
 tidymac dup ~/Downloads --detailed        # Show file paths per group
 ```
 
-The duplicate finder uses a **3-pass pipeline** for speed:
+The duplicate finder uses a **4-pass pipeline** for speed:
 
 ```
 Pass 1: Group by file size ──► eliminates ~95% instantly
@@ -150,75 +210,84 @@ Create custom profiles in `~/.tidymac/profiles/custom.toml`.
 
 ---
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                 TidyMac CLI                     │
-│  ┌───────┐ ┌───────┐ ┌─────┐ ┌──────┐ ┌─────┐ │
-│  │ Scan  │ │ Clean │ │ Dup │ │ Apps │ │ ... │ │
-│  └───┬───┘ └───┬───┘ └──┬──┘ └──┬───┘ └──┬──┘ │
-│      │         │        │       │        │     │
-│  ┌───┴─────────┴────────┴───────┴────────┴───┐ │
-│  │            Core Engine Layer              │ │
-│  │  Scanner │ Cleaner │ Hasher │ Profiles    │ │
-│  │  Walker  │ Staging │ Perceptual │ Config  │ │
-│  │  DevDetect│ Manifest│ Resolver │ Safety   │ │
-│  └───────────────────────────────────────────┘ │
-│  ┌───────────────────────────────────────────┐ │
-│  │         macOS Integration Layer           │ │
-│  │  File System │ plist │ launchctl │ Perms  │ │
-│  └───────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────┘
-```
-
-**Tech Stack:** Rust + clap + walkdir + rayon + sha2 + image_hasher + plist + colored + indicatif
-
-**Safety:** Protected path detection prevents accidental deletion of `~`, `/System`, `~/Documents`, `~/.ssh`, etc. — even if a scanner bug mislabels them.
-
----
-
 ## Project Structure
 
 ```
-src/
-├── main.rs              # CLI entry point & command routing (919 lines)
-├── lib.rs               # Library root (FFI-ready for SwiftUI)
-├── cli/                 # Argument parsing & output formatting
-│   ├── args.rs          # clap derive definitions
-│   └── output.rs        # Human, JSON, and quiet formatters
-├── scanner/             # File system scanning engine
-│   ├── targets.rs       # 30+ scan target definitions
-│   ├── walker.rs        # Parallel file walker (rayon)
-│   └── dev_detector.rs  # Developer tool detection
-├── cleaner/             # Cleaning with staging & undo
-│   ├── engine.rs        # Dry-run, soft-delete, hard-delete
-│   ├── staging.rs       # Soft-delete with file preservation
-│   ├── manifest.rs      # JSON operation logging
-│   └── purger.rs        # Auto-purge expired sessions
-├── duplicates/          # Duplicate detection
-│   ├── hasher.rs        # SHA-256 quick & full hashing
-│   ├── perceptual.rs    # Image similarity (dHash)
-│   ├── grouper.rs       # 4-pass pipeline orchestrator
-│   └── resolver.rs      # Smart keep/remove strategies
-├── apps/                # App uninstaller
-│   ├── detector.rs      # App discovery + plist parsing
-│   └── uninstaller.rs   # Safe removal with dry-run
-├── startup/             # Startup items manager
-│   └── manager.rs       # LaunchAgent/Daemon management
-├── privacy/             # Privacy dashboard
-│   ├── browsers.rs      # 10 browser profile scanner
-│   └── trackers.rs      # Tracking domain database
-├── viz/                 # Storage visualization
-│   └── storage.rs       # Disk usage bar charts
-├── profiles/            # Smart profile system
-│   └── loader.rs        # Built-in + custom TOML profiles
-└── common/              # Shared utilities
-    ├── config.rs         # TOML configuration
-    ├── format.rs         # Size/path/duration formatting
-    ├── permissions.rs    # SIP & FDA detection
-    ├── safety.rs         # Protected path guards
-    └── errors.rs         # Error types
+tidymac/
+├── Cargo.toml               # Rust package manifest
+├── src/                     # Rust core engine
+│   ├── main.rs              # CLI entry point & command routing
+│   ├── lib.rs               # Library root (FFI-ready for SwiftUI)
+│   ├── ffi.rs               # C FFI exports
+│   ├── cli/                 # Argument parsing & output formatting
+│   ├── scanner/             # File system scanning engine
+│   ├── cleaner/             # Cleaning with staging & undo
+│   ├── duplicates/          # Duplicate detection (SHA-256 + perceptual)
+│   ├── apps/                # App uninstaller
+│   ├── startup/             # Startup items manager
+│   ├── privacy/             # Privacy dashboard
+│   ├── viz/                 # Storage visualization
+│   ├── profiles/            # Smart profile system
+│   └── common/              # Shared utilities & safety guards
+├── ffi/                     # C header for FFI bridge
+│   └── tidymac.h
+├── TidyMac/                 # SwiftUI macOS app
+│   ├── Package.swift        # Swift Package Manager manifest
+│   ├── Sources/             # Swift source files
+│   │   ├── TidyMacApp.swift # App entry point
+│   │   ├── ContentView.swift
+│   │   ├── Bridge/          # Rust FFI bridge layer
+│   │   ├── ViewModels/      # App state management
+│   │   └── Views/           # SwiftUI views (7 screens)
+│   ├── Libraries/           # FFI artifacts (dylib, header, modulemap)
+│   ├── Info.plist
+│   └── TidyMac.entitlements
+├── profiles/                # Built-in cleanup profiles (TOML)
+├── scripts/                 # Build & release scripts
+│   ├── build-ffi.sh         # Build Rust → Swift FFI bridge
+│   ├── build-dmg.sh         # Package as .dmg installer
+│   ├── release.sh           # Full release pipeline
+│   └── install.sh           # CLI installation script
+├── build/                   # Pre-built app bundle & DMG
+├── tests/                   # Integration & unit tests
+└── .github/workflows/       # CI/CD pipelines
+```
+
+---
+
+## Building
+
+### Prerequisites
+
+- **macOS 14+** (Sonoma or later)
+- **Rust 1.70+** — [Install via rustup](https://rustup.rs)
+- **Swift 5.9+** — Included with Xcode 15+
+- **Full Disk Access** recommended (for scanning Mail, Safari data)
+
+### Build CLI Only
+
+```bash
+cargo build --release
+```
+
+### Build SwiftUI App
+
+```bash
+# 1. Build Rust library
+cargo build --release
+
+# 2. Generate FFI artifacts
+./scripts/build-ffi.sh
+
+# 3. Build & run the app
+cd TidyMac && swift run TidyMacApp
+```
+
+### Build DMG Installer
+
+```bash
+./scripts/build-dmg.sh
+# Output: build/TidyMac.dmg
 ```
 
 ---
@@ -245,22 +314,33 @@ cargo test --test hasher_test # Duplicate detection tests
 
 ## Roadmap
 
-- [ ] **SwiftUI GUI** — Native macOS app wrapping the Rust CLI via FFI
+- [x] **Rust CLI** — Full-featured command-line interface
+- [x] **SwiftUI GUI** — Native macOS app wrapping the Rust core via FFI
 - [ ] **Incremental scan caching** — Only re-scan changed files
 - [ ] **Docker integration** — `docker system prune` integration
 - [ ] **Homebrew formula** — `brew install tidymac`
 - [ ] **Scheduled cleanup** — Automated profiles via launchd
+- [ ] **Menu bar app** — Quick-access from the macOS menu bar
 
 ---
 
-## Requirements
+## Contributing
 
-- macOS 12+ (Monterey or later)
-- Rust 1.70+ (for building)
-- Full Disk Access recommended (for Mail, Safari data)
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+```bash
+# Fork & clone
+git clone https://github.com/<your-username>/tidymac.git
+cd tidymac
+
+# Run tests
+cargo test
+
+# Submit a PR
+```
 
 ---
 
 ## License
 
-MIT — Built by [Jeeva Krishna Samy](https://github.com/jeevakrishnasamy)
+MIT — Built by [Jeeva](https://github.com/jivanandham)
