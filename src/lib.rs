@@ -13,14 +13,14 @@
 //! - **Privacy Dashboard**: Audit browser cookies, tracking data, local databases
 //! - **100% Offline**: Zero telemetry, no accounts, no cloud
 
-pub mod cli;
+pub mod apps;
 pub mod cleaner;
+pub mod cli;
 pub mod common;
 pub mod duplicates;
-pub mod apps;
 pub mod ffi;
-pub mod startup;
 pub mod privacy;
 pub mod profiles;
 pub mod scanner;
+pub mod startup;
 pub mod viz;

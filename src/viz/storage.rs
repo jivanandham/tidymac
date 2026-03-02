@@ -47,20 +47,64 @@ pub fn analyze_disk_usage() -> DiskUsage {
     let mut categories = Vec::new();
 
     let scan_targets: Vec<(&str, &str, PathBuf, CategoryColor)> = vec![
-        ("Applications", "📱", PathBuf::from("/Applications"), CategoryColor::Blue),
-        ("Documents", "📄", home.join("Documents"), CategoryColor::Green),
+        (
+            "Applications",
+            "📱",
+            PathBuf::from("/Applications"),
+            CategoryColor::Blue,
+        ),
+        (
+            "Documents",
+            "📄",
+            home.join("Documents"),
+            CategoryColor::Green,
+        ),
         ("Desktop", "🖥️", home.join("Desktop"), CategoryColor::Cyan),
-        ("Downloads", "📥", home.join("Downloads"), CategoryColor::Yellow),
-        ("Pictures", "🖼️", home.join("Pictures"), CategoryColor::Magenta),
+        (
+            "Downloads",
+            "📥",
+            home.join("Downloads"),
+            CategoryColor::Yellow,
+        ),
+        (
+            "Pictures",
+            "🖼️",
+            home.join("Pictures"),
+            CategoryColor::Magenta,
+        ),
         ("Music", "🎵", home.join("Music"), CategoryColor::Cyan),
         ("Movies", "🎬", home.join("Movies"), CategoryColor::Red),
-        ("Developer", "🔧", home.join("Developer"), CategoryColor::Green),
-        ("Library Caches", "📁", home.join("Library/Caches"), CategoryColor::Yellow),
-        ("Library App Support", "📁", home.join("Library/Application Support"), CategoryColor::White),
+        (
+            "Developer",
+            "🔧",
+            home.join("Developer"),
+            CategoryColor::Green,
+        ),
+        (
+            "Library Caches",
+            "📁",
+            home.join("Library/Caches"),
+            CategoryColor::Yellow,
+        ),
+        (
+            "Library App Support",
+            "📁",
+            home.join("Library/Application Support"),
+            CategoryColor::White,
+        ),
     ];
 
     // Also check common dev directories
-    let dev_dirs = ["Projects", "projects", "Code", "code", "repos", "src", "workspace", "dev"];
+    let dev_dirs = [
+        "Projects",
+        "projects",
+        "Code",
+        "code",
+        "repos",
+        "src",
+        "workspace",
+        "dev",
+    ];
     let mut found_dev = false;
 
     for dir_name in &dev_dirs {

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::path::Path;
 
 use super::manifest::{CleanManifest, ManifestItem};
@@ -14,13 +15,24 @@ pub fn stage_files(
     show_progress: bool,
 ) -> Result<()> {
     let files_dir = manifest.staging_files_dir();
-    std::fs::create_dir_all(&files_dir)
-        .with_context(|| format!("Failed to create staging files dir: {}", files_dir.display()))?;
+    std::fs::create_dir_all(&files_dir).with_context(|| {
+        format!(
+            "Failed to create staging files dir: {}",
+            files_dir.display()
+        )
+    })?;
 
     // Count total files for progress bar
-    let total_files: usize = items.iter().map(|item| {
-        if item.files.is_empty() { 1 } else { item.files.len() }
-    }).sum();
+    let total_files: usize = items
+        .iter()
+        .map(|item| {
+            if item.files.is_empty() {
+                1
+            } else {
+                item.files.len()
+            }
+        })
+        .sum();
 
     let pb = if show_progress {
         let pb = ProgressBar::new(total_files as u64);
@@ -50,7 +62,7 @@ pub fn stage_files(
                         original_path: item.path.clone(),
                         staged_path: Some(staged_path),
                         size_bytes: item.size_bytes,
-                        category: format!("{}", item.category),
+                        category: item.category.to_string(),
                         safety: format!("{:?}", item.safety),
                         is_dir: item.path.is_dir(),
                         success: true,
@@ -58,16 +70,12 @@ pub fn stage_files(
                     });
                 }
                 Err(e) => {
-                    let err_msg = format!(
-                        "Failed to stage '{}': {}",
-                        item.path.display(),
-                        e
-                    );
+                    let err_msg = format!("Failed to stage '{}': {}", item.path.display(), e);
                     manifest.add_item(ManifestItem {
                         original_path: item.path.clone(),
                         staged_path: None,
                         size_bytes: item.size_bytes,
-                        category: format!("{}", item.category),
+                        category: item.category.to_string(),
                         safety: format!("{:?}", item.safety),
                         is_dir: item.path.is_dir(),
                         success: false,
@@ -93,7 +101,7 @@ pub fn stage_files(
                             original_path: file_entry.path.clone(),
                             staged_path: Some(staged_path),
                             size_bytes: file_entry.size_bytes,
-                            category: format!("{}", item.category),
+                            category: item.category.to_string(),
                             safety: format!("{:?}", item.safety),
                             is_dir: file_entry.path.is_dir(),
                             success: true,
@@ -101,16 +109,13 @@ pub fn stage_files(
                         });
                     }
                     Err(e) => {
-                        let err_msg = format!(
-                            "Failed to stage '{}': {}",
-                            file_entry.path.display(),
-                            e
-                        );
+                        let err_msg =
+                            format!("Failed to stage '{}': {}", file_entry.path.display(), e);
                         manifest.add_item(ManifestItem {
                             original_path: file_entry.path.clone(),
                             staged_path: None,
                             size_bytes: file_entry.size_bytes,
-                            category: format!("{}", item.category),
+                            category: item.category.to_string(),
                             safety: format!("{:?}", item.safety),
                             is_dir: file_entry.path.is_dir(),
                             success: false,
@@ -121,10 +126,7 @@ pub fn stage_files(
                 }
 
                 if let Some(ref pb) = pb {
-                    pb.set_message(format::truncate(
-                        &format::format_path(&file_entry.path),
-                        40,
-                    ));
+                    pb.set_message(format::truncate(&format::format_path(&file_entry.path), 40));
                     pb.inc(1);
                 }
             }
@@ -163,12 +165,8 @@ fn stage_single_path(original: &Path, staged: &Path) -> Result<()> {
         if let Some(parent) = staged.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(original, staged).with_context(|| {
-            format!(
-                "Failed to copy '{}' to staging",
-                original.display()
-            )
-        })?;
+        std::fs::copy(original, staged)
+            .with_context(|| format!("Failed to copy '{}' to staging", original.display()))?;
         std::fs::remove_file(original).with_context(|| {
             format!(
                 "Staged copy successful but failed to remove original: {}",
@@ -180,20 +178,37 @@ fn stage_single_path(original: &Path, staged: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Recursively copy a directory
+/// Recursively copy a directory in parallel using rayon for CPU-bound I/O
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
 
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
+    let entries: Vec<_> = std::fs::read_dir(src)?.filter_map(|e| e.ok()).collect();
 
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
+    // Use parallel iteration for large directories; fall back gracefully on error
+    let results: Vec<Result<()>> = entries
+        .par_iter()
+        .map(|entry| {
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if src_path.is_dir() {
+                copy_dir_recursive(&src_path, &dst_path)
+            } else {
+                std::fs::copy(&src_path, &dst_path)
+                    .with_context(|| {
+                        format!(
+                            "Failed to copy '{}' to '{}'",
+                            src_path.display(),
+                            dst_path.display()
+                        )
+                    })
+                    .map(|_| ())
+            }
+        })
+        .collect();
+
+    // Collect all errors and return the first one
+    for result in results {
+        result?;
     }
 
     Ok(())
@@ -204,10 +219,7 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
     let mut manifest = CleanManifest::load_from_session(session_id)?;
 
     if manifest.restored {
-        anyhow::bail!(
-            "Session '{}' has already been restored",
-            session_id
-        );
+        anyhow::bail!("Session '{}' has already been restored", session_id);
     }
 
     let restorable_items: Vec<&ManifestItem> = manifest
@@ -242,10 +254,7 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
         let original_path = &item.original_path;
 
         if let Some(ref pb) = pb {
-            pb.set_message(format::truncate(
-                &format::format_path(original_path),
-                40,
-            ));
+            pb.set_message(format::truncate(&format::format_path(original_path), 40));
         }
 
         // Ensure parent directory exists for restoration
@@ -307,16 +316,15 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
 /// Move a single file/directory back from staging to original path
 fn restore_single_path(staged: &Path, original: &Path) -> Result<()> {
     if !staged.exists() {
-        anyhow::bail!(
-            "Staged file no longer exists: {}",
-            staged.display()
-        );
+        anyhow::bail!("Staged file no longer exists: {}", staged.display());
     }
 
-    // Don't overwrite if something already exists at the original path
+    // Don't overwrite if something already exists at the original path.
+    // Tip: use `tidymac undo --force` (future) to overwrite.
     if original.exists() {
         anyhow::bail!(
-            "Original path already exists (won't overwrite): {}",
+            "Original path already exists (won't overwrite): {}. \
+             If you want to force-restore, delete the existing file first.",
             original.display()
         );
     }

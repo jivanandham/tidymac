@@ -1,0 +1,58 @@
+.TH TIDYMAC 1 "March 2026" "TidyMac v1.0.0" "TidyMac Manual"
+.SH NAME
+tidymac \- A developer-aware, privacy-first Mac cleanup utility
+.SH SYNOPSIS
+.B tidymac
+[\fIOPTIONS\fR] [\fICOMMAND\fR]
+.SH DESCRIPTION
+.B tidymac
+is a powerful cleanup utility designed for macOS developers. It identifies and removes unnecessary files like caches, logs, and temporary developer assets (Xcode derived data, Docker images, etc.).
+.SH COMMANDS
+.TP
+\fBscan\fR
+Scan the system for reclaimable space.
+.TP
+\fBclean\fR
+Remove identified junk files.
+.TP
+\fBdisk-usage\fR
+Show current disk usage breakdown.
+.TP
+\fBapps\fR
+Manage installed applications and leftovers.
+.TP
+\fBprivacy\fR
+Perform a privacy audit (cookies, history).
+.TP
+\fBdocker\fR
+Manage Docker images and containers.
+.TP
+\fBundo\fR
+Restore files from the staging area.
+.TP
+\fBdiagnostics\fR
+Collect logs and system info for support.
+.SH OPTIONS
+.TP
+\fB\-p, \-\-profile <PROFILE>\fR
+Select a scan profile (quick, developer, deep).
+.TP
+\fB\-m, \-\-mode <MODE>\fR
+Set cleaning mode (dry-run, soft, hard).
+.TP
+\fB\-h, \-\-help\fR
+Print help information.
+.TP
+\fB\-V, \-\-version\fR
+Print version information.
+.SH FILES
+.TP
+\fI~/.tidymac/config.toml\fR
+User configuration file.
+.TP
+\fI~/Library/Logs/TidyMac/tidymac.log\fR
+System logs.
+.SH AUTHOR
+Jeeva Krishnasamy
+.SH REPORTING BUGS
+Report bugs on GitHub: https://github.com/jeevakrishnasamy/tidymac

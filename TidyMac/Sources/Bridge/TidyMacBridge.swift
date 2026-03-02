@@ -6,6 +6,12 @@ import Foundation
 @_silgen_name("tidymac_free_string")
 func tidymac_free_string(_ ptr: UnsafeMutablePointer<CChar>?)
 
+@_silgen_name("tidymac_startup_list")
+func tidymac_startup_list() -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("tidymac_startup_toggle")
+func tidymac_startup_toggle(_ label: UnsafePointer<CChar>?, _ enable: Bool) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("tidymac_scan")
 func tidymac_scan(_ profile: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 
@@ -38,6 +44,12 @@ func tidymac_profiles_list() -> UnsafeMutablePointer<CChar>?
 
 @_silgen_name("tidymac_version")
 func tidymac_version() -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("tidymac_cancel_scan")
+func tidymac_cancel_scan()
+
+@_silgen_name("tidymac_init_observability")
+func tidymac_init_observability(_ verbose: Bool, _ sentryDsn: UnsafePointer<CChar>?)
 
 // MARK: - Swift Bridge
 
@@ -153,6 +165,50 @@ class TidyMacBridge {
     func version() -> String {
         callFFIString(tidymac_version()) ?? "unknown"
     }
+
+    func cancelScan() {
+        tidymac_cancel_scan()
+    }
+
+    func initObservability(verbose: Bool, sentryDsn: String?) {
+        if let dsn = sentryDsn {
+            dsn.withCString { tidymac_init_observability(verbose, $0) }
+        } else {
+            tidymac_init_observability(verbose, nil)
+        }
+    }
+
+    // MARK: - Startup
+    func startupList() -> [StartupItemInfo] {
+        guard let resultCStr = tidymac_startup_list() else { return [] }
+        defer { tidymac_free_string(resultCStr) }
+        
+        let jsonStr = String(cString: resultCStr)
+        guard let data = jsonStr.data(using: .utf8) else { return [] }
+        
+        do {
+            return try JSONDecoder().decode([StartupItemInfo].self, from: data)
+        } catch {
+            print("Failed to decode startup list: \(error) - JSON: \(jsonStr)")
+            return []
+        }
+    }
+
+    func toggleStartupItem(label: String, enable: Bool) -> Bool {
+        let result = label.withCString { tidymac_startup_toggle($0, enable) }
+        guard let dict = callFFI(result) else { return false }
+        return dict["success"] as? Bool ?? false
+    }
+}
+
+// MARK: - Startup Data Model
+struct StartupItemInfo: Codable, Identifiable {
+    var id: String { return label }
+    var label: String
+    var kind: String
+    var program: String?
+    var enabled: Bool
+    var file_path: String
 }
 
 // MARK: - Data Models

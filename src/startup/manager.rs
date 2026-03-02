@@ -118,11 +118,7 @@ fn parse_launch_plist(path: &Path, kind: StartupKind) -> Option<StartupItem> {
     // Also check overrides directory for user agents
     let is_disabled_override = check_disabled_override(&label);
 
-    let name = label
-        .rsplit('.')
-        .next()
-        .unwrap_or(&label)
-        .to_string();
+    let name = label.rsplit('.').next().unwrap_or(&label).to_string();
 
     Some(StartupItem {
         name,
@@ -211,10 +207,7 @@ pub fn enable_item(item: &StartupItem) -> Result<String> {
             }
         }
         StartupKind::SystemLaunchAgent | StartupKind::SystemLaunchDaemon => {
-            anyhow::bail!(
-                "Cannot enable system item '{}'. Requires sudo.",
-                item.label
-            )
+            anyhow::bail!("Cannot enable system item '{}'. Requires sudo.", item.label)
         }
     }
 }

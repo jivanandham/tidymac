@@ -2,29 +2,20 @@ use colored::*;
 use serde_json;
 
 use crate::common::format::{self, format_path, format_size, format_size_colored};
-use crate::scanner::targets::{ScanItem, ScanResults, SafetyLevel};
+use crate::scanner::targets::{SafetyLevel, ScanItem, ScanResults};
 
 /// Print scan results in human-readable format
 pub fn print_scan_results(results: &ScanResults, detailed: bool) {
     println!();
-    println!(
-        "{}  TidyMac Scan Results",
-        "🧹".to_string()
-    );
-    println!(
-        "{}",
-        "─".repeat(60).dimmed()
-    );
+    println!("{}  TidyMac Scan Results", "🧹".to_string());
+    println!("{}", "─".repeat(60).dimmed());
     println!(
         "  Scanned in {}  •  {} reclaimable  •  {}",
         format::format_duration(results.duration_secs).cyan(),
         format_size_colored(results.total_reclaimable),
         format::format_count(results.total_files).dimmed()
     );
-    println!(
-        "{}",
-        "─".repeat(60).dimmed()
-    );
+    println!("{}", "─".repeat(60).dimmed());
     println!();
 
     if results.items.is_empty() {
@@ -111,10 +102,7 @@ pub fn print_scan_results(results: &ScanResults, detailed: bool) {
     }
 
     // Summary
-    println!(
-        "{}",
-        "─".repeat(60).dimmed()
-    );
+    println!("{}", "─".repeat(60).dimmed());
     println!(
         "  {} Total reclaimable: {}",
         "💾".to_string(),
@@ -153,7 +141,11 @@ fn print_scan_item(item: &ScanItem, detailed: bool) {
     );
 
     if detailed {
-        println!("      {} {}", "↳".dimmed(), format_path(&item.path).dimmed());
+        println!(
+            "      {} {}",
+            "↳".dimmed(),
+            format_path(&item.path).dimmed()
+        );
         println!("      {} {}", "↳".dimmed(), item.reason.dimmed());
 
         // Show top 5 largest files
@@ -240,11 +232,7 @@ pub fn print_clean_report(report: &crate::cleaner::CleanReport) {
     );
 
     if let Some(ref sid) = report.session_id {
-        println!(
-            "  {} Session: {}",
-            "💾",
-            sid.cyan()
-        );
+        println!("  {} Session: {}", "💾", sid.cyan());
         println!(
             "  {} Undo with: {}",
             "💡",
@@ -254,11 +242,7 @@ pub fn print_clean_report(report: &crate::cleaner::CleanReport) {
 
     if !report.errors.is_empty() {
         println!();
-        println!(
-            "  {} {} errors:",
-            "⚠".yellow(),
-            report.errors.len()
-        );
+        println!("  {} {} errors:", "⚠".yellow(), report.errors.len());
         for (i, err) in report.errors.iter().enumerate().take(10) {
             println!("    {} {}", format!("{}.", i + 1).dimmed(), err.dimmed());
         }
@@ -331,8 +315,16 @@ pub fn print_sessions(sessions: &[crate::cleaner::SessionSummary]) {
     }
 
     println!();
-    println!("  {} Restore: {}", "💡", "tidymac undo --session <ID>".cyan());
-    println!("  {} Purge expired: {}", "💡", "tidymac purge --expired".cyan());
+    println!(
+        "  {} Restore: {}",
+        "💡",
+        "tidymac undo --session <ID>".cyan()
+    );
+    println!(
+        "  {} Purge expired: {}",
+        "💡",
+        "tidymac purge --expired".cyan()
+    );
     println!();
 }
 
@@ -487,7 +479,11 @@ pub fn print_dup_results(results: &crate::duplicates::DupResults, detailed: bool
             if detailed {
                 for (j, member) in group.members.iter().enumerate() {
                     let sim_pct = format!("{:.0}%", member.similarity * 100.0);
-                    let label = if j == 0 { "best →" } else { &format!(" {}  →", sim_pct) };
+                    let label = if j == 0 {
+                        "best →"
+                    } else {
+                        &format!(" {}  →", sim_pct)
+                    };
                     let color_path = if j == 0 {
                         format_path(&member.path).green().to_string()
                     } else {
@@ -512,11 +508,7 @@ pub fn print_dup_results(results: &crate::duplicates::DupResults, detailed: bool
 
     // Errors
     if !results.errors.is_empty() {
-        println!(
-            "  {} {} warnings:",
-            "⚠".yellow(),
-            results.errors.len()
-        );
+        println!("  {} {} warnings:", "⚠".yellow(), results.errors.len());
         for err in results.errors.iter().take(5) {
             println!("    {} {}", "→".dimmed(), err.dimmed());
         }
@@ -598,17 +590,30 @@ pub fn print_app_list(apps: &[crate::apps::InstalledApp], detailed: bool) {
 
     println!(
         "  {:<30} {:>10} {:>10} {:>10}  {}",
-        "Name".dimmed(), "App Size".dimmed(), "Leftovers".dimmed(), "Total".dimmed(), "Source".dimmed(),
+        "Name".dimmed(),
+        "App Size".dimmed(),
+        "Leftovers".dimmed(),
+        "Total".dimmed(),
+        "Source".dimmed(),
     );
     println!("  {}", "─".repeat(68).dimmed());
 
     for app in apps {
-        let leftovers: u64 = app.associated_files.iter().filter(|a| a.exists).map(|a| a.size).sum();
+        let leftovers: u64 = app
+            .associated_files
+            .iter()
+            .filter(|a| a.exists)
+            .map(|a| a.size)
+            .sum();
         println!(
             "  {:<30} {:>10} {:>10} {:>10}  {}",
             format::truncate(&app.name, 30),
             format_size(app.app_size),
-            if leftovers > 0 { format_size(leftovers) } else { "-".to_string() },
+            if leftovers > 0 {
+                format_size(leftovers)
+            } else {
+                "-".to_string()
+            },
             format_size(app.total_size),
             format!("{}", app.source).dimmed(),
         );
@@ -657,7 +662,12 @@ pub fn print_app_info(app: &crate::apps::InstalledApp) {
     if !existing.is_empty() {
         let assoc_size: u64 = existing.iter().map(|a| a.size).sum();
         println!();
-        println!("  {} Associated files ({}, {}):", "📁", existing.len(), format_size(assoc_size));
+        println!(
+            "  {} Associated files ({}, {}):",
+            "📁",
+            existing.len(),
+            format_size(assoc_size)
+        );
         for assoc in &existing {
             println!(
                 "    {} {} ({})",
@@ -721,7 +731,10 @@ pub fn print_startup_items(items: &[crate::startup::StartupItem]) {
 
     println!(
         "  {:<6} {:<30} {:<15} {}",
-        "".dimmed(), "Label".dimmed(), "Kind".dimmed(), "Program".dimmed(),
+        "".dimmed(),
+        "Label".dimmed(),
+        "Kind".dimmed(),
+        "Program".dimmed(),
     );
     println!("  {}", "─".repeat(68).dimmed());
 
@@ -768,7 +781,14 @@ pub fn print_startup_info(item: &crate::startup::StartupItem) {
     println!("  Name:         {}", item.name);
     println!("  Label:        {}", item.label);
     println!("  Kind:         {}", item.kind);
-    println!("  Enabled:      {}", if item.enabled { "Yes".green().to_string() } else { "No".red().to_string() });
+    println!(
+        "  Enabled:      {}",
+        if item.enabled {
+            "Yes".green().to_string()
+        } else {
+            "No".red().to_string()
+        }
+    );
     println!("  Run at load:  {}", item.run_at_load);
     if let Some(ref prog) = item.program {
         println!("  Program:      {}", prog);
@@ -806,11 +826,7 @@ pub fn print_privacy_report(report: &crate::privacy::PrivacyReport) {
 
             for (name, size) in items {
                 if size > 0 {
-                    println!(
-                        "      {:<20} {:>10}",
-                        name.dimmed(),
-                        format_size(size),
-                    );
+                    println!("      {:<20} {:>10}", name.dimmed(), format_size(size),);
                 }
             }
             println!(
@@ -824,7 +840,11 @@ pub fn print_privacy_report(report: &crate::privacy::PrivacyReport) {
 
     // Cookie locations
     if !report.cookie_locations.is_empty() {
-        println!("  {} Cookie Storage ({} locations)", "🍪", report.cookie_locations.len());
+        println!(
+            "  {} Cookie Storage ({} locations)",
+            "🍪",
+            report.cookie_locations.len()
+        );
         println!();
 
         for loc in report.cookie_locations.iter().take(15) {
@@ -835,10 +855,7 @@ pub fn print_privacy_report(report: &crate::privacy::PrivacyReport) {
             );
         }
         if report.cookie_locations.len() > 15 {
-            println!(
-                "    ... and {} more",
-                report.cookie_locations.len() - 15
-            );
+            println!("    ... and {} more", report.cookie_locations.len() - 15);
         }
         println!();
     }
@@ -985,19 +1002,28 @@ pub fn print_docker_usage(usage: &crate::scanner::docker::DockerUsage) {
 /// Print Docker prune report
 pub fn print_docker_prune_report(report: &crate::scanner::docker::DockerPruneReport) {
     println!();
-    println!(
-        "  {} Docker prune complete",
-        "🐳",
-    );
+    println!("  {} Docker prune complete", "🐳",);
 
     if report.containers_removed > 0 {
-        println!("    {} {} containers removed", "✗".red(), report.containers_removed);
+        println!(
+            "    {} {} containers removed",
+            "✗".red(),
+            report.containers_removed
+        );
     }
     if report.images_removed > 0 {
-        println!("    {} {} image layers removed", "✗".red(), report.images_removed);
+        println!(
+            "    {} {} image layers removed",
+            "✗".red(),
+            report.images_removed
+        );
     }
     if report.volumes_removed > 0 {
-        println!("    {} {} volumes removed", "✗".red(), report.volumes_removed);
+        println!(
+            "    {} {} volumes removed",
+            "✗".red(),
+            report.volumes_removed
+        );
     }
     if report.build_cache_cleared {
         println!("    {} Build cache cleared", "✗".red());

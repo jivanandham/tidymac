@@ -53,10 +53,15 @@ struct AppsView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(viewModel.isLoadingApps)
+                .accessibilityLabel("Refresh Application List")
             }
             .padding()
 
             Divider()
+
+            if !viewModel.hasFullDiskAccess {
+                PermissionBanner(viewModel: viewModel)
+            }
 
             if viewModel.isLoadingApps {
                 Spacer()
@@ -148,6 +153,8 @@ struct AppRow: View {
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(app.name), \(app.totalSizeFormatted)\(app.leftoversSize > 0 ? ", including \(app.leftoversFormatted) leftovers" : "")")
     }
 }
 

@@ -238,6 +238,40 @@ tidymac status                            # Overview of everything
 
 </details>
 
+<details>
+<summary><b>🐳 Docker</b> — Manage and prune Docker resources</summary>
+
+```bash
+tidymac docker                            # Show Docker disk usage
+tidymac docker --prune                    # Prune dangling images, containers, volumes
+tidymac docker --prune --dry-run          # Preview what would be reclaimed
+```
+
+</details>
+
+<details>
+<summary><b>🔥 Purge</b> — Manage staging area and auto-purge</summary>
+
+```bash
+tidymac purge --expired                   # Purge expired sessions from staging
+tidymac purge --all                       # Permanently purge ALL sessions
+tidymac purge --install-auto              # Install launchd plist for daily auto-purge
+```
+
+</details>
+
+<details>
+<summary><b>⚙️ Configuration</b> — Manage TidyMac settings</summary>
+
+```bash
+tidymac config init                       # Initialize config at ~/.tidymac
+tidymac config show                       # Show current configuration
+tidymac config set stale_days 30          # Update a configuration value
+tidymac config clear-cache                # Clear the scan cache
+```
+
+</details>
+
 ---
 
 ## 🎛️ Smart Profiles
@@ -379,8 +413,8 @@ cargo test --test hasher_test # Duplicate detection tests
 - [x] 🦀 **Rust CLI** — Full-featured command-line interface
 - [x] 🖥️ **SwiftUI GUI** — Native macOS app via Rust FFI
 - [x] 🍺 **Homebrew formula** — `brew tap jivanandham/tidymac && brew install tidymac`
-- [ ] ⚡ **Incremental scan caching** — Only re-scan changed files
-- [ ] 🐳 **Docker integration** — `docker system prune` integration
+- [x] ⚡ **Incremental scan caching** — Only re-scan changed files
+- [x] 🐳 **Docker integration** — `docker system prune` integration
 - [ ] ⏰ **Scheduled cleanup** — Automated profiles via launchd
 - [ ] 📌 **Menu bar app** — Quick-access from the macOS menu bar
 

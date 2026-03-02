@@ -3,6 +3,10 @@ import Combine
 
 @MainActor
 class AppViewModel: ObservableObject {
+    // MARK: - App Sandbox Bookmarks
+    @Published var hasFullDiskAccess = false
+    @Published var selectedFolders: [URL] = []
+    
     // MARK: - Dashboard
     @Published var diskUsage: DiskUsageResult?
     @Published var isLoadingDisk = false
@@ -10,8 +14,9 @@ class AppViewModel: ObservableObject {
     // MARK: - Scan
     @Published var scanResult: ScanResult?
     @Published var isScanning = false
-    @Published var selectedProfile = "developer"
+    @Published var selectedProfile: String = UserDefaults.standard.string(forKey: "defaultProfile") ?? "developer"
     @Published var selectedItems: Set<UUID> = []
+    @Published var lastScanDate: Double = UserDefaults.standard.double(forKey: "lastScanDate")
 
     // MARK: - Clean
     @Published var cleanResult: CleanResult?
@@ -60,18 +65,32 @@ class AppViewModel: ObservableObject {
     @Published var dockerResult: DockerResult?
     @Published var isLoadingDocker = false
 
+    // MARK: - Startup
+    @Published var startupItems: [StartupItemInfo] = []
+    @Published var isLoadingStartup = false
+
     // MARK: - History
     @Published var undoSessions: [UndoSession] = []
     @Published var isLoadingHistory = false
+    @Published var undoResult: UndoResult?
+    @Published var showUndoResult = false
+    @Published var isLoadingHistoryDetail = false
 
     // MARK: - Profiles
     @Published var profiles: [ProfileInfo] = []
 
     private let bridge = TidyMacBridge.shared
 
+    init() {
+        loadSavedBookmarks()
+        loadProfiles()
+        loadDiskUsage()
+    }
+
     // MARK: - Actions
 
     func loadDiskUsage() {
+        startAccessingSecurityScopedResources()
         isLoadingDisk = true
         Task.detached { [bridge] in
             let result = bridge.diskUsage()
@@ -83,14 +102,19 @@ class AppViewModel: ObservableObject {
     }
 
     func runScan() {
+        startAccessingSecurityScopedResources()
         isScanning = true
         scanResult = nil
         let profile = selectedProfile
         Task.detached { [bridge] in
             let result = bridge.scan(profile: profile)
+            let now = Date().timeIntervalSince1970
+            UserDefaults.standard.set(now, forKey: "lastScanDate")
+            
             await MainActor.run { [weak self] in
                 self?.scanResult = result
                 self?.isScanning = false
+                self?.lastScanDate = now
                 if let items = result?.items {
                     self?.selectedItems = Set(items.filter { $0.safety == "Safe" }.map { $0.id })
                 }
@@ -98,11 +122,15 @@ class AppViewModel: ObservableObject {
         }
     }
 
+    func cancelScan() {
+        bridge.cancelScan()
+    }
+
     func runClean(mode: String) {
+        startAccessingSecurityScopedResources()
         isCleaning = true
         let profile = selectedProfile
 
-        // Resolve selected UUIDs to item names
         var selectedNames: [String]? = nil
         if let items = scanResult?.items {
             let names = items.filter { selectedItems.contains($0.id) }.map { $0.name }
@@ -123,6 +151,7 @@ class AppViewModel: ObservableObject {
     }
 
     func cleanAppLeftovers(appName: String) {
+        startAccessingSecurityScopedResources()
         isCleaningApp = true
         Task.detached { [bridge] in
             let result = bridge.appCleanLeftovers(appName: appName)
@@ -130,13 +159,13 @@ class AppViewModel: ObservableObject {
                 self?.appCleanResult = result
                 self?.isCleaningApp = false
                 self?.showAppCleanResult = true
-                // Refresh apps list to show updated sizes
                 self?.loadApps()
             }
         }
     }
 
     func loadApps() {
+        startAccessingSecurityScopedResources()
         isLoadingApps = true
         Task.detached { [bridge] in
             let result = bridge.appsList()
@@ -148,6 +177,7 @@ class AppViewModel: ObservableObject {
     }
 
     func loadPrivacy() {
+        startAccessingSecurityScopedResources()
         isLoadingPrivacy = true
         Task.detached { [bridge] in
             let result = bridge.privacyScan()
@@ -165,6 +195,28 @@ class AppViewModel: ObservableObject {
             await MainActor.run { [weak self] in
                 self?.dockerResult = result
                 self?.isLoadingDocker = false
+            }
+        }
+    }
+
+    func loadStartupItems() {
+        isLoadingStartup = true
+        Task.detached { [bridge] in
+            let result = bridge.startupList()
+            await MainActor.run { [weak self] in
+                self?.startupItems = result
+                self?.isLoadingStartup = false
+            }
+        }
+    }
+
+    func toggleStartupItem(label: String, enable: Bool) {
+        Task.detached { [bridge] in
+            let success = bridge.toggleStartupItem(label: label, enable: enable)
+            if success {
+                await MainActor.run { [weak self] in
+                    self?.loadStartupItems()
+                }
             }
         }
     }
@@ -190,12 +242,80 @@ class AppViewModel: ObservableObject {
     }
 
     func undoSession(id: String) {
+        startAccessingSecurityScopedResources()
         Task.detached { [bridge] in
-            let _ = bridge.undoSession(id: id)
+            let result = bridge.undoSession(id: id)
             await MainActor.run { [weak self] in
+                self?.undoResult = result
+                self?.showUndoResult = true
                 self?.loadHistory()
                 self?.loadDiskUsage()
             }
+        }
+    }
+    
+    // MARK: - Security Scoped Bookmarks
+    
+    func requestFolderAccess() {
+        let panel = NSOpenPanel()
+        panel.message = "Select folders to grant TidyMac access for scanning."
+        panel.prompt = "Grant Access"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        
+        if panel.runModal() == .OK {
+            for url in panel.urls {
+                saveBookmark(for: url)
+            }
+            loadSavedBookmarks()
+            startAccessingSecurityScopedResources()
+        }
+    }
+    
+    private func saveBookmark(for url: URL) {
+        do {
+            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            var bookmarks = UserDefaults.standard.dictionary(forKey: "SecurityScopedBookmarks") as? [String: Data] ?? [:]
+            bookmarks[url.path] = bookmarkData
+            UserDefaults.standard.set(bookmarks, forKey: "SecurityScopedBookmarks")
+        } catch {
+            print("Failed to save bookmark: \(error.localizedDescription)")
+        }
+    }
+    
+    func loadSavedBookmarks() {
+        guard let bookmarks = UserDefaults.standard.dictionary(forKey: "SecurityScopedBookmarks") as? [String: Data] else {
+            return
+        }
+        
+        var loadedURLs: [URL] = []
+        for (_, data) in bookmarks {
+            var isStale = false
+            do {
+                let url = try URL(resolvingBookmarkData: data, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+                if !isStale {
+                    loadedURLs.append(url)
+                }
+            } catch {
+                print("Failed to resolve bookmark: \(error.localizedDescription)")
+            }
+        }
+        
+        self.selectedFolders = loadedURLs
+        self.hasFullDiskAccess = !loadedURLs.isEmpty
+    }
+    
+    func startAccessingSecurityScopedResources() {
+        for url in selectedFolders {
+            _ = url.startAccessingSecurityScopedResource()
+        }
+    }
+    
+    func stopAccessingSecurityScopedResources() {
+        for url in selectedFolders {
+            url.stopAccessingSecurityScopedResource()
         }
     }
 }

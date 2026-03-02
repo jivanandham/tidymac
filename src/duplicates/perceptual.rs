@@ -67,10 +67,7 @@ pub fn compute_hashes(paths: &[PathBuf]) -> Vec<PerceptualHash> {
 /// - 0.95 = very similar (minor edits)
 /// - 0.85 = similar (different compression, slight crop)
 /// - 0.70 = loosely similar
-pub fn find_similar_groups(
-    hashes: &[PerceptualHash],
-    threshold: f64,
-) -> Vec<SimilarGroup> {
+pub fn find_similar_groups(hashes: &[PerceptualHash], threshold: f64) -> Vec<SimilarGroup> {
     let hash_bits = 256; // 16x16 hash
     let max_distance = ((1.0 - threshold) * hash_bits as f64).round() as u32;
 

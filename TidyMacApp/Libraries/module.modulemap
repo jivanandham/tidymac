@@ -1,0 +1,5 @@
+module TidyMacFFI {
+    header "tidymac.h"
+    link "tidymac"
+    export *
+}

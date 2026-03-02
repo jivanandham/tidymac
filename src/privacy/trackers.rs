@@ -206,7 +206,11 @@ fn scan_tracking_data(home: &Path) -> Vec<TrackingApp> {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_dir() {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     let size = crate::scanner::walker::dir_size(&path);
                     if size > 0 {
                         apps.push(TrackingApp {
@@ -245,9 +249,7 @@ fn scan_tracking_data(home: &Path) -> Vec<TrackingApp> {
 /// Check if a domain is a known tracker
 pub fn is_known_tracker(domain: &str) -> bool {
     let lower = domain.to_lowercase();
-    KNOWN_TRACKERS
-        .iter()
-        .any(|tracker| lower.contains(tracker))
+    KNOWN_TRACKERS.iter().any(|tracker| lower.contains(tracker))
 }
 
 /// Get the count of known trackers in the database

@@ -8,6 +8,10 @@ use crate::common::config::Config;
 /// A complete manifest for one cleaning session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanManifest {
+    /// Schema version for future migrations
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+
     /// Unique session identifier (timestamp-based)
     pub session_id: String,
 
@@ -67,6 +71,10 @@ pub struct ManifestItem {
     pub error: Option<String>,
 }
 
+fn default_schema_version() -> u32 {
+    1
+}
+
 impl CleanManifest {
     /// Create a new manifest for a cleaning session
     pub fn new(profile: &str, mode: &str, retention_days: u32) -> Self {
@@ -79,6 +87,7 @@ impl CleanManifest {
         };
 
         Self {
+            schema_version: default_schema_version(),
             session_id,
             timestamp: now,
             profile: profile.to_string(),
@@ -150,8 +159,7 @@ impl CleanManifest {
         let log_date = self.timestamp.format("%Y-%m-%d").to_string();
         let log_path = log_dir.join(format!("clean-{}.jsonl", log_date));
 
-        let log_entry =
-            serde_json::to_string(self).context("Failed to serialize log entry")?;
+        let log_entry = serde_json::to_string(self).context("Failed to serialize log entry")?;
 
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
@@ -166,21 +174,17 @@ impl CleanManifest {
 
     /// Load a manifest from a session directory
     pub fn load_from_session(session_id: &str) -> Result<Self> {
-        let manifest_path = Config::staging_dir()
-            .join(session_id)
-            .join("manifest.json");
+        let manifest_path = Config::staging_dir().join(session_id).join("manifest.json");
 
         if !manifest_path.exists() {
             anyhow::bail!("Session '{}' not found", session_id);
         }
 
-        let contents = std::fs::read_to_string(&manifest_path).with_context(|| {
-            format!("Failed to read manifest: {}", manifest_path.display())
-        })?;
+        let contents = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("Failed to read manifest: {}", manifest_path.display()))?;
 
-        let manifest: CleanManifest = serde_json::from_str(&contents).with_context(|| {
-            format!("Failed to parse manifest: {}", manifest_path.display())
-        })?;
+        let manifest: CleanManifest = serde_json::from_str(&contents)
+            .with_context(|| format!("Failed to parse manifest: {}", manifest_path.display()))?;
 
         Ok(manifest)
     }

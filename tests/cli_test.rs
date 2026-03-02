@@ -38,10 +38,7 @@ fn test_version_flag() {
 
 #[test]
 fn test_scan_quiet_mode() {
-    tidymac()
-        .args(["scan", "--quiet"])
-        .assert()
-        .success();
+    tidymac().args(["scan", "--quiet"]).assert().success();
 }
 
 #[test]
@@ -96,10 +93,7 @@ fn test_status() {
 
 #[test]
 fn test_undo_list() {
-    tidymac()
-        .args(["undo", "--list"])
-        .assert()
-        .success();
+    tidymac().args(["undo", "--list"]).assert().success();
 }
 
 #[test]
@@ -124,10 +118,7 @@ fn test_purge_no_flags_shows_help() {
 
 #[test]
 fn test_purge_expired() {
-    tidymac()
-        .args(["purge", "--expired"])
-        .assert()
-        .success();
+    tidymac().args(["purge", "--expired"]).assert().success();
 }
 
 // ─── Apps command ────────────────────────────────────────────────────────────
@@ -163,10 +154,7 @@ fn test_apps_info_nonexistent() {
 
 #[test]
 fn test_startup_list() {
-    tidymac()
-        .args(["startup", "list"])
-        .assert()
-        .success();
+    tidymac().args(["startup", "list"]).assert().success();
 }
 
 // ─── Privacy command ─────────────────────────────────────────────────────────

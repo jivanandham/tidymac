@@ -2,14 +2,43 @@
 //!
 //! Exposes TidyMac core functionality via C-ABI functions that Swift can call.
 //! All returned strings are JSON-encoded and must be freed by the caller.
+//!
+//! # Safety
+//! All `extern "C"` functions are wrapped in `std::panic::catch_unwind` to prevent
+//! Rust panics from crossing the C ABI boundary (which is undefined behavior).
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 use crate::common::config::Config;
 use crate::common::format;
 use crate::profiles::loader::Profile;
 use crate::scanner;
+
+// ─── Panic Safety Macro ──────────────────────────────────────────────────────
+
+/// Wraps an FFI function body in `catch_unwind` to prevent Rust panics from
+/// crossing the C ABI boundary. Returns an error JSON string if a panic occurs.
+macro_rules! ffi_safe {
+    ($body:block) => {{
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)) {
+            Ok(result) => result,
+            Err(panic) => {
+                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                    format!("Internal error (panic): {}", s)
+                } else if let Some(s) = panic.downcast_ref::<String>() {
+                    format!("Internal error (panic): {}", s)
+                } else {
+                    "Internal error (unknown panic)".to_string()
+                };
+                error_c(&msg)
+            }
+        }
+    }};
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -37,11 +66,27 @@ fn error_c(msg: &str) -> *mut c_char {
 /// Free a string returned by any tidymac FFI function.
 #[no_mangle]
 pub extern "C" fn tidymac_free_string(ptr: *mut c_char) {
-    if !ptr.is_null() {
-        unsafe {
-            let _ = CString::from_raw(ptr);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if !ptr.is_null() {
+            unsafe {
+                let _ = CString::from_raw(ptr);
+            }
         }
-    }
+    }));
+}
+
+/// Initialize logging and crash reporting for the GUI.
+/// sentry_dsn: Optional Sentry DSN string.
+#[no_mangle]
+pub extern "C" fn tidymac_init_observability(verbose: bool, sentry_dsn: *const c_char) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dsn = if sentry_dsn.is_null() {
+            None
+        } else {
+            unsafe { CStr::from_ptr(sentry_dsn) }.to_str().ok()
+        };
+        let _ = crate::common::observability::init(verbose, dsn);
+    }));
 }
 
 // ─── Scan ────────────────────────────────────────────────────────────────────
@@ -50,6 +95,8 @@ pub extern "C" fn tidymac_free_string(ptr: *mut c_char) {
 /// Profile names: "quick", "developer", "creative", "deep"
 #[no_mangle]
 pub extern "C" fn tidymac_scan(profile_name: *const c_char) -> *mut c_char {
+    ffi_safe!({
+    CANCEL_FLAG.store(false, Ordering::Relaxed);
     let profile_name = if profile_name.is_null() {
         "quick".to_string()
     } else {
@@ -80,8 +127,17 @@ pub extern "C" fn tidymac_scan(profile_name: *const c_char) -> *mut c_char {
         &profile_name,
     ) {
         Ok(r) => r,
-        Err(e) => return error_c(&format!("Scan failed: {}", e)),
+        Err(e) => {
+            if CANCEL_FLAG.load(Ordering::Relaxed) {
+                return error_c("CANCELLED");
+            }
+            return error_c(&format!("Scan failed: {}", e));
+        }
     };
+
+    if CANCEL_FLAG.load(Ordering::Relaxed) {
+        return error_c("CANCELLED");
+    }
 
     // Build a JSON-friendly response
     let response = serde_json::json!({
@@ -106,6 +162,7 @@ pub extern "C" fn tidymac_scan(profile_name: *const c_char) -> *mut c_char {
     });
 
     json_to_c(&response)
+    })
 }
 
 // ─── Disk Usage ──────────────────────────────────────────────────────────────
@@ -113,6 +170,7 @@ pub extern "C" fn tidymac_scan(profile_name: *const c_char) -> *mut c_char {
 /// Get disk usage breakdown. Returns JSON string.
 #[no_mangle]
 pub extern "C" fn tidymac_disk_usage() -> *mut c_char {
+    ffi_safe!({
     let usage = crate::viz::analyze_disk_usage();
 
     let response = serde_json::json!({
@@ -137,6 +195,7 @@ pub extern "C" fn tidymac_disk_usage() -> *mut c_char {
     });
 
     json_to_c(&response)
+    })
 }
 
 // ─── Apps ────────────────────────────────────────────────────────────────────
@@ -144,6 +203,7 @@ pub extern "C" fn tidymac_disk_usage() -> *mut c_char {
 /// Discover all installed applications. Returns JSON string.
 #[no_mangle]
 pub extern "C" fn tidymac_apps_list() -> *mut c_char {
+    ffi_safe!({
     let mut apps = crate::apps::discover_apps();
     apps.sort_by(|a, b| b.total_size.cmp(&a.total_size));
 
@@ -175,6 +235,7 @@ pub extern "C" fn tidymac_apps_list() -> *mut c_char {
         .collect();
 
     json_to_c(&response)
+    })
 }
 
 /// Clean leftovers (caches, logs, app support, etc.) for a specific app by name.
@@ -182,13 +243,12 @@ pub extern "C" fn tidymac_apps_list() -> *mut c_char {
 /// Returns JSON string with report.
 #[no_mangle]
 pub extern "C" fn tidymac_app_clean_leftovers(app_name: *const c_char) -> *mut c_char {
+    ffi_safe!({
     if app_name.is_null() {
         return error_c("app_name is required");
     }
 
-    let app_name = unsafe { CStr::from_ptr(app_name) }
-        .to_str()
-        .unwrap_or("");
+    let app_name = unsafe { CStr::from_ptr(app_name) }.to_str().unwrap_or("");
 
     let apps = crate::apps::discover_apps();
     let matches = crate::apps::find_app_by_name(&apps, app_name);
@@ -215,9 +275,9 @@ pub extern "C" fn tidymac_app_clean_leftovers(app_name: *const c_char) -> *mut c
 
         // Check if path is under a SIP-protected directory
         let path_str = assoc.path.display().to_string();
-        let is_protected = sip_protected_components.iter().any(|comp| {
-            path_str.contains(&format!("/Library/{}/", comp))
-        });
+        let is_protected = sip_protected_components
+            .iter()
+            .any(|comp| path_str.contains(&format!("/Library/{}/", comp)));
 
         if is_protected {
             skipped.push(format!(
@@ -241,7 +301,10 @@ pub extern "C" fn tidymac_app_clean_leftovers(app_name: *const c_char) -> *mut c
             }
             Err(e) => {
                 let msg = if e.raw_os_error() == Some(1) {
-                    format!("{}: Permission denied — grant Full Disk Access in System Settings", path_str)
+                    format!(
+                        "{}: Permission denied — grant Full Disk Access in System Settings",
+                        path_str
+                    )
                 } else {
                     format!("{}: {}", path_str, e)
                 };
@@ -261,6 +324,7 @@ pub extern "C" fn tidymac_app_clean_leftovers(app_name: *const c_char) -> *mut c
     });
 
     json_to_c(&response)
+    })
 }
 
 // ─── Clean ───────────────────────────────────────────────────────────────────
@@ -276,6 +340,7 @@ pub extern "C" fn tidymac_clean(
     mode: *const c_char,
     selected_names_json: *const c_char,
 ) -> *mut c_char {
+    ffi_safe!({
     let profile_name = if profile_name.is_null() {
         "quick".to_string()
     } else {
@@ -339,15 +404,24 @@ pub extern "C" fn tidymac_clean(
     // Filter to only selected items if a selection was provided
     let items_to_clean: Vec<_> = if let Some(ref names) = selected_names {
         if names.is_empty() {
-            return to_c_string(r#"{"files_removed":0,"bytes_freed":0,"message":"No items selected"}"#);
+            return to_c_string(
+                r#"{"files_removed":0,"bytes_freed":0,"message":"No items selected"}"#,
+            );
         }
-        results.items.iter().filter(|item| names.contains(&item.name)).cloned().collect()
+        results
+            .items
+            .iter()
+            .filter(|item| names.contains(&item.name))
+            .cloned()
+            .collect()
     } else {
         results.items.clone()
     };
 
     if items_to_clean.is_empty() {
-        return to_c_string(r#"{"files_removed":0,"bytes_freed":0,"message":"No matching items found"}"#);
+        return to_c_string(
+            r#"{"files_removed":0,"bytes_freed":0,"message":"No matching items found"}"#,
+        );
     }
 
     let report = match crate::cleaner::clean(&items_to_clean, clean_mode, &profile_name, false) {
@@ -365,6 +439,7 @@ pub extern "C" fn tidymac_clean(
     });
 
     json_to_c(&response)
+    })
 }
 
 // ─── Privacy ─────────────────────────────────────────────────────────────────
@@ -372,6 +447,7 @@ pub extern "C" fn tidymac_clean(
 /// Run privacy audit. Returns JSON string.
 #[no_mangle]
 pub extern "C" fn tidymac_privacy_scan() -> *mut c_char {
+    ffi_safe!({
     let report = crate::privacy::run_privacy_audit(true, true);
 
     let response = serde_json::json!({
@@ -403,6 +479,7 @@ pub extern "C" fn tidymac_privacy_scan() -> *mut c_char {
     });
 
     json_to_c(&response)
+    })
 }
 
 // ─── Docker ──────────────────────────────────────────────────────────────────
@@ -410,6 +487,7 @@ pub extern "C" fn tidymac_privacy_scan() -> *mut c_char {
 /// Get Docker usage. Returns JSON string.
 #[no_mangle]
 pub extern "C" fn tidymac_docker_usage() -> *mut c_char {
+    ffi_safe!({
     let usage = crate::scanner::docker::get_docker_usage();
 
     let response = serde_json::json!({
@@ -441,6 +519,7 @@ pub extern "C" fn tidymac_docker_usage() -> *mut c_char {
     });
 
     json_to_c(&response)
+    })
 }
 
 // ─── Undo ────────────────────────────────────────────────────────────────────
@@ -448,6 +527,7 @@ pub extern "C" fn tidymac_docker_usage() -> *mut c_char {
 /// List undo sessions. Returns JSON string.
 #[no_mangle]
 pub extern "C" fn tidymac_undo_list() -> *mut c_char {
+    ffi_safe!({
     let sessions = match crate::cleaner::CleanManifest::list_sessions() {
         Ok(s) => s,
         Err(e) => return error_c(&format!("Failed to list sessions: {}", e)),
@@ -472,18 +552,18 @@ pub extern "C" fn tidymac_undo_list() -> *mut c_char {
         .collect();
 
     json_to_c(&response)
+    })
 }
 
 /// Restore a session by ID. Returns JSON string.
 #[no_mangle]
 pub extern "C" fn tidymac_undo_session(session_id: *const c_char) -> *mut c_char {
+    ffi_safe!({
     if session_id.is_null() {
         return error_c("session_id is required");
     }
 
-    let session_id = unsafe { CStr::from_ptr(session_id) }
-        .to_str()
-        .unwrap_or("");
+    let session_id = unsafe { CStr::from_ptr(session_id) }.to_str().unwrap_or("");
 
     let report = match crate::cleaner::restore_session(session_id, false) {
         Ok(r) => r,
@@ -499,6 +579,68 @@ pub extern "C" fn tidymac_undo_session(session_id: *const c_char) -> *mut c_char
     });
 
     json_to_c(&response)
+    })
+}
+
+// ─── Startup ─────────────────────────────────────────────────────────────────
+
+/// List all startup items. Returns JSON string.
+#[no_mangle]
+pub extern "C" fn tidymac_startup_list() -> *mut c_char {
+    ffi_safe!({
+    let items = crate::startup::discover_startup_items();
+
+    let response: Vec<_> = items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "label": item.label,
+                "kind": format!("{}", item.kind),
+                "program": item.program,
+                "enabled": item.enabled,
+                "file_path": item.path.display().to_string(),
+            })
+        })
+        .collect();
+
+    json_to_c(&response)
+    })
+}
+
+/// Toggle a startup item's enabled state. Returns JSON string.
+#[no_mangle]
+pub extern "C" fn tidymac_startup_toggle(label: *const c_char, enable: bool) -> *mut c_char {
+    ffi_safe!({
+    if label.is_null() {
+        return error_c("label is required");
+    }
+
+    let label_str = unsafe { CStr::from_ptr(label) }.to_str().unwrap_or("");
+    let items = crate::startup::discover_startup_items();
+    let matches = crate::startup::find_item_by_name(&items, label_str);
+
+    if matches.is_empty() {
+        return error_c(&format!("No startup item found matching '{}'", label_str));
+    }
+
+    let item = matches[0];
+    let result = if enable {
+        crate::startup::enable_item(item)
+    } else {
+        crate::startup::disable_item(item)
+    };
+
+    match result {
+        Ok(msg) => {
+            let response = serde_json::json!({
+                "success": true,
+                "message": msg,
+            });
+            json_to_c(&response)
+        }
+        Err(e) => error_c(&e.to_string()),
+    }
+    })
 }
 
 // ─── Profiles ────────────────────────────────────────────────────────────────
@@ -506,6 +648,7 @@ pub extern "C" fn tidymac_undo_session(session_id: *const c_char) -> *mut c_char
 /// List available profiles. Returns JSON string.
 #[no_mangle]
 pub extern "C" fn tidymac_profiles_list() -> *mut c_char {
+    ffi_safe!({
     let profiles = Profile::available_profiles();
 
     let response: Vec<_> = profiles
@@ -523,6 +666,7 @@ pub extern "C" fn tidymac_profiles_list() -> *mut c_char {
         .collect();
 
     json_to_c(&response)
+    })
 }
 
 // ─── Version ─────────────────────────────────────────────────────────────────
@@ -530,5 +674,15 @@ pub extern "C" fn tidymac_profiles_list() -> *mut c_char {
 /// Get TidyMac version. Returns a C string (not JSON).
 #[no_mangle]
 pub extern "C" fn tidymac_version() -> *mut c_char {
+    ffi_safe!({
     to_c_string(env!("CARGO_PKG_VERSION"))
+    })
+}
+
+/// Signal the current scan to cancel.
+#[no_mangle]
+pub extern "C" fn tidymac_cancel_scan() {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        CANCEL_FLAG.store(true, Ordering::SeqCst);
+    }));
 }

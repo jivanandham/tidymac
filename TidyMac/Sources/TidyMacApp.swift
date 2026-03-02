@@ -1,8 +1,19 @@
 import SwiftUI
+#if canImport(Sparkle)
+import Sparkle
+#endif
 
 @main
 struct TidyMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    
+    #if canImport(Sparkle)
+    private let updaterController: SPUStandardUpdaterController
+    
+    init() {
+        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    }
+    #endif
 
     var body: some Scene {
         WindowGroup {
@@ -15,7 +26,16 @@ struct TidyMacApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates...") {}
+                #if canImport(Sparkle)
+                Button("Check for Updates...") {
+                    updaterController.checkForUpdates(nil)
+                }
+                #else
+                Button("Check for Updates...") {
+                    // Fallback if Sparkle not linked
+                }
+                .disabled(true)
+                #endif
             }
         }
 
@@ -26,6 +46,11 @@ struct TidyMacApp: App {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Initialize observability (logging + sentry)
+        TidyMacBridge.shared.initObservability(verbose: true, sentryDsn: nil)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }

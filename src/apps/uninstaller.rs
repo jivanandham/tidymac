@@ -71,11 +71,9 @@ pub fn uninstall_app(app: &InstalledApp, dry_run: bool) -> Result<UninstallRepor
                     report.files_removed += 1;
                 }
                 Err(e) => {
-                    report.errors.push(format!(
-                        "Failed to remove '{}': {}",
-                        path.display(),
-                        e
-                    ));
+                    report
+                        .errors
+                        .push(format!("Failed to remove '{}': {}", path.display(), e));
                 }
             }
         }

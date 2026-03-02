@@ -23,11 +23,18 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags([
                     "-L", "../target/release",
+                    "-L", "../target/debug",
                     "-ltidymac",
                     "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib",
                     "-Xlinker", "-rpath", "-Xlinker", "../target/release",
+                    "-Xlinker", "-rpath", "-Xlinker", "../target/debug",
                 ]),
             ]
+        ),
+        .testTarget(
+            name: "TidyMacTests",
+            dependencies: ["TidyMacApp"],
+            path: "Tests/TidyMacTests"
         ),
     ]
 )

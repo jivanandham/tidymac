@@ -76,9 +76,12 @@ pub fn clean(
 
     match mode {
         CleanMode::DryRun => clean_dry_run(items),
-        CleanMode::SoftDelete => {
-            clean_soft_delete(items, profile_name, config.staging_retention_days, show_progress)
-        }
+        CleanMode::SoftDelete => clean_soft_delete(
+            items,
+            profile_name,
+            config.staging_retention_days,
+            show_progress,
+        ),
         CleanMode::HardDelete => clean_hard_delete(items, profile_name, show_progress),
     }
 }
@@ -145,16 +148,20 @@ fn clean_hard_delete(
     // Count total files for progress
     let total_files: usize = items
         .iter()
-        .map(|item| if item.files.is_empty() { 1 } else { item.files.len() })
+        .map(|item| {
+            if item.files.is_empty() {
+                1
+            } else {
+                item.files.len()
+            }
+        })
         .sum();
 
     let pb = if show_progress {
         let pb = ProgressBar::new(total_files as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.red} [{bar:40.red/blue}] {pos}/{len} Deleting... {msg}",
-                )
+                .template("{spinner:.red} [{bar:40.red/blue}] {pos}/{len} Deleting... {msg}")
                 .unwrap()
                 .progress_chars("━━░"),
         );
@@ -184,10 +191,7 @@ fn clean_hard_delete(
         } else {
             for file_entry in &item.files {
                 if let Some(ref pb) = pb {
-                    pb.set_message(format::truncate(
-                        &format::format_path(&file_entry.path),
-                        40,
-                    ));
+                    pb.set_message(format::truncate(&format::format_path(&file_entry.path), 40));
                 }
 
                 let result = hard_delete_path(&file_entry.path);

@@ -13,48 +13,28 @@ pub enum TidyError {
     },
 
     /// Permission denied accessing a path
-    PermissionDenied {
-        path: PathBuf,
-        hint: String,
-    },
+    PermissionDenied { path: PathBuf, hint: String },
 
     /// SIP-protected path cannot be accessed
-    SipProtected {
-        path: PathBuf,
-    },
+    SipProtected { path: PathBuf },
 
     /// Configuration file is invalid
-    ConfigError {
-        path: PathBuf,
-        message: String,
-    },
+    ConfigError { path: PathBuf, message: String },
 
     /// Profile not found
-    ProfileNotFound {
-        name: String,
-    },
+    ProfileNotFound { name: String },
 
     /// Staging area operation failed
-    StagingError {
-        message: String,
-    },
+    StagingError { message: String },
 
     /// Hash computation failed
-    HashError {
-        path: PathBuf,
-        message: String,
-    },
+    HashError { path: PathBuf, message: String },
 
     /// App bundle is invalid or unreadable
-    AppError {
-        name: String,
-        message: String,
-    },
+    AppError { name: String, message: String },
 
     /// Generic error with context
-    Other {
-        message: String,
-    },
+    Other { message: String },
 }
 
 impl std::fmt::Display for TidyError {
@@ -64,12 +44,7 @@ impl std::fmt::Display for TidyError {
                 write!(f, "I/O error at '{}': {}", path.display(), source)
             }
             TidyError::PermissionDenied { path, hint } => {
-                write!(
-                    f,
-                    "Permission denied: '{}'. {}",
-                    path.display(),
-                    hint
-                )
+                write!(f, "Permission denied: '{}'. {}", path.display(), hint)
             }
             TidyError::SipProtected { path } => {
                 write!(

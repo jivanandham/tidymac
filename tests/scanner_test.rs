@@ -28,7 +28,11 @@ fn test_format_path_with_home() {
     if let Some(home) = dirs::home_dir() {
         let test_path = home.join("Documents/test.txt");
         let formatted = format::format_path(&test_path);
-        assert!(formatted.starts_with("~/"), "Path should start with ~/, got: {}", formatted);
+        assert!(
+            formatted.starts_with("~/"),
+            "Path should start with ~/, got: {}",
+            formatted
+        );
         assert!(formatted.contains("Documents/test.txt"));
     }
 }
@@ -53,10 +57,18 @@ fn test_truncate_edge_cases() {
 
 #[test]
 fn test_sip_protected_paths() {
-    assert!(permissions::is_sip_protected(std::path::Path::new("/System/Library")));
-    assert!(permissions::is_sip_protected(std::path::Path::new("/usr/bin/ls")));
-    assert!(!permissions::is_sip_protected(std::path::Path::new("/Applications/Safari.app")));
-    assert!(!permissions::is_sip_protected(std::path::Path::new("/tmp/test")));
+    assert!(permissions::is_sip_protected(std::path::Path::new(
+        "/System/Library"
+    )));
+    assert!(permissions::is_sip_protected(std::path::Path::new(
+        "/usr/bin/ls"
+    )));
+    assert!(!permissions::is_sip_protected(std::path::Path::new(
+        "/Applications/Safari.app"
+    )));
+    assert!(!permissions::is_sip_protected(std::path::Path::new(
+        "/tmp/test"
+    )));
 }
 
 #[test]
@@ -93,12 +105,11 @@ fn test_config_large_file_threshold_bytes() {
 #[test]
 fn test_config_is_excluded() {
     let mut config = Config::default();
-    config.exclude_paths = vec![
-        "node_modules".to_string(),
-        ".git".to_string(),
-    ];
+    config.exclude_paths = vec!["node_modules".to_string(), ".git".to_string()];
 
-    assert!(config.is_excluded(std::path::Path::new("/Users/test/projects/app/node_modules")));
+    assert!(config.is_excluded(std::path::Path::new(
+        "/Users/test/projects/app/node_modules"
+    )));
     assert!(config.is_excluded(std::path::Path::new("/Users/test/repos/tidymac/.git")));
     assert!(!config.is_excluded(std::path::Path::new("/Users/test/Documents/report.pdf")));
 }
@@ -110,7 +121,10 @@ fn test_config_serialization_roundtrip() {
     let loaded: Config = toml::from_str(&toml_str).unwrap();
 
     assert_eq!(loaded.staging_retention_days, config.staging_retention_days);
-    assert_eq!(loaded.large_file_threshold_mb, config.large_file_threshold_mb);
+    assert_eq!(
+        loaded.large_file_threshold_mb,
+        config.large_file_threshold_mb
+    );
     assert_eq!(loaded.stale_days, config.stale_days);
 }
 
@@ -118,10 +132,22 @@ fn test_config_serialization_roundtrip() {
 
 #[test]
 fn test_builtin_profiles_load() {
-    let names = ["quick", "quick_sweep", "developer", "dev", "creative", "deep", "deep_clean"];
+    let names = [
+        "quick",
+        "quick_sweep",
+        "developer",
+        "dev",
+        "creative",
+        "deep",
+        "deep_clean",
+    ];
     for name in &names {
         let profile = Profile::load(name);
-        assert!(profile.is_ok(), "Profile '{}' should load successfully", name);
+        assert!(
+            profile.is_ok(),
+            "Profile '{}' should load successfully",
+            name
+        );
     }
 }
 
@@ -197,7 +223,10 @@ fn test_all_targets_non_empty() {
 #[test]
 fn test_system_junk_targets() {
     let targets = targets::system_junk_targets();
-    assert!(targets.len() >= 5, "Should have at least 5 system junk targets");
+    assert!(
+        targets.len() >= 5,
+        "Should have at least 5 system junk targets"
+    );
 
     // Verify each target has required fields
     for t in &targets {
@@ -210,7 +239,10 @@ fn test_system_junk_targets() {
 #[test]
 fn test_developer_targets() {
     let targets = targets::developer_targets();
-    assert!(targets.len() >= 10, "Should have at least 10 developer targets");
+    assert!(
+        targets.len() >= 10,
+        "Should have at least 10 developer targets"
+    );
 
     let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
     assert!(names.iter().any(|n| n.contains("Xcode")));
@@ -228,7 +260,10 @@ fn test_expand_paths_tilde() {
     let expanded = walker::expand_paths(&paths);
 
     assert_eq!(expanded.len(), 1);
-    assert!(!expanded[0].to_string_lossy().contains('~'), "Tilde should be expanded");
+    assert!(
+        !expanded[0].to_string_lossy().contains('~'),
+        "Tilde should be expanded"
+    );
 
     if let Some(home) = dirs::home_dir() {
         assert!(
@@ -253,7 +288,11 @@ fn test_dir_size_with_files() {
 
     let size = walker::dir_size(dir.path());
     // Physical disk usage (st_blocks * 512) is block-aligned, so >= logical size
-    assert!(size >= 11, "Dir size should be at least sum of file sizes, got {}", size);
+    assert!(
+        size >= 11,
+        "Dir size should be at least sum of file sizes, got {}",
+        size
+    );
     assert!(size <= 16384, "Dir size should be reasonable, got {}", size);
 }
 
@@ -290,9 +329,15 @@ fn test_find_large_files() {
 
     let large = walker::find_large_files(&scan_dir, 1000);
     // Both files may exceed 1000 bytes in physical blocks, so filter by name
-    let big_files: Vec<_> = large.iter().filter(|f| f.path.to_string_lossy().contains("big.txt")).collect();
+    let big_files: Vec<_> = large
+        .iter()
+        .filter(|f| f.path.to_string_lossy().contains("big.txt"))
+        .collect();
     assert_eq!(big_files.len(), 1, "Should find big.txt as large file");
-    assert!(big_files[0].size_bytes >= 2000, "big.txt physical size should be >= 2000");
+    assert!(
+        big_files[0].size_bytes >= 2000,
+        "big.txt physical size should be >= 2000"
+    );
 }
 
 #[test]

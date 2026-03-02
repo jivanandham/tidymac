@@ -157,6 +157,8 @@ struct PrivacyStatCard: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(value)")
     }
 }
 
@@ -185,6 +187,8 @@ struct BrowserProfileRow: View {
         .padding()
         .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
         .padding(.horizontal)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(profile.browser) browser data: \(profile.totalSizeFormatted). Includes \(profile.cookiesSizeFormatted) of cookies and \(profile.cacheSizeFormatted) of cache.")
     }
 
     private var browserIcon: String {

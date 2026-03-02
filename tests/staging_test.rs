@@ -82,15 +82,25 @@ fn test_manifest_failed_item_not_counted() {
         error: Some("Permission denied".to_string()),
     });
 
-    assert_eq!(manifest.total_files, 0, "Failed items should not be counted");
+    assert_eq!(
+        manifest.total_files, 0,
+        "Failed items should not be counted"
+    );
     assert_eq!(manifest.total_bytes, 0);
-    assert_eq!(manifest.items.len(), 1, "Failed items should still be in the list");
+    assert_eq!(
+        manifest.items.len(),
+        1,
+        "Failed items should still be in the list"
+    );
 }
 
 #[test]
 fn test_manifest_hard_delete_no_expiry() {
     let manifest = CleanManifest::new("quick", "hard_delete", 0);
-    assert!(manifest.expires_at.is_none(), "Hard delete should have no expiry");
+    assert!(
+        manifest.expires_at.is_none(),
+        "Hard delete should have no expiry"
+    );
     assert!(!manifest.is_expired());
 }
 
@@ -170,7 +180,10 @@ fn test_restore_moves_files_back() {
 
     // Verify content preserved
     let restored_content = std::fs::read_to_string(&original_path).unwrap();
-    assert_eq!(restored_content, original_content, "Content should be preserved after restore");
+    assert_eq!(
+        restored_content, original_content,
+        "Content should be preserved after restore"
+    );
 }
 
 #[test]

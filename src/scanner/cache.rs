@@ -103,8 +103,7 @@ impl ScanCache {
             std::fs::create_dir_all(parent)?;
         }
 
-        let json = serde_json::to_string_pretty(self)
-            .context("Failed to serialize scan cache")?;
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize scan cache")?;
         std::fs::write(&path, json)
             .with_context(|| format!("Failed to write cache: {}", path.display()))?;
 

@@ -4,10 +4,10 @@ use std::time::SystemTime;
 /// Source of application installation
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppSource {
-    Applications,      // /Applications
-    UserApplications,  // ~/Applications
-    Homebrew,          // Homebrew cask
-    System,            // System apps (not removable)
+    Applications,     // /Applications
+    UserApplications, // ~/Applications
+    Homebrew,         // Homebrew cask
+    System,           // System apps (not removable)
 }
 
 impl std::fmt::Display for AppSource {
@@ -86,11 +86,19 @@ pub fn discover_apps() -> Vec<InstalledApp> {
     let mut apps = Vec::new();
 
     // Scan /Applications
-    scan_app_directory(Path::new("/Applications"), AppSource::Applications, &mut apps);
+    scan_app_directory(
+        Path::new("/Applications"),
+        AppSource::Applications,
+        &mut apps,
+    );
 
     // Scan ~/Applications
     if let Some(home) = dirs::home_dir() {
-        scan_app_directory(&home.join("Applications"), AppSource::UserApplications, &mut apps);
+        scan_app_directory(
+            &home.join("Applications"),
+            AppSource::UserApplications,
+            &mut apps,
+        );
     }
 
     // Sort by name
@@ -121,10 +129,7 @@ fn scan_app_directory(dir: &Path, source: AppSource, apps: &mut Vec<InstalledApp
 
 /// Parse an .app bundle to extract metadata
 fn parse_app_bundle(app_path: &Path, source: AppSource) -> Option<InstalledApp> {
-    let name = app_path
-        .file_stem()?
-        .to_string_lossy()
-        .to_string();
+    let name = app_path.file_stem()?.to_string_lossy().to_string();
 
     let info_plist = app_path.join("Contents/Info.plist");
 
@@ -198,13 +203,27 @@ pub fn find_associated_files(app_name: &str, bundle_id: Option<&str>) -> Vec<Ass
 
     for id in &identifiers {
         // ~/Library/Application Support/
-        check_associated(&home.join("Library/Application Support").join(id), AssociatedKind::AppSupport, &mut files);
+        check_associated(
+            &home.join("Library/Application Support").join(id),
+            AssociatedKind::AppSupport,
+            &mut files,
+        );
 
         // ~/Library/Caches/
-        check_associated(&home.join("Library/Caches").join(id), AssociatedKind::Cache, &mut files);
+        check_associated(
+            &home.join("Library/Caches").join(id),
+            AssociatedKind::Cache,
+            &mut files,
+        );
 
         // ~/Library/Preferences/
-        check_associated(&home.join("Library/Preferences").join(format!("{}.plist", id)), AssociatedKind::Preferences, &mut files);
+        check_associated(
+            &home
+                .join("Library/Preferences")
+                .join(format!("{}.plist", id)),
+            AssociatedKind::Preferences,
+            &mut files,
+        );
 
         // ~/Library/Preferences/ByHost/
         check_glob_associated(
@@ -216,13 +235,19 @@ pub fn find_associated_files(app_name: &str, bundle_id: Option<&str>) -> Vec<Ass
 
         // ~/Library/Saved Application State/
         check_associated(
-            &home.join("Library/Saved Application State").join(format!("{}.savedState", id)),
+            &home
+                .join("Library/Saved Application State")
+                .join(format!("{}.savedState", id)),
             AssociatedKind::SavedState,
             &mut files,
         );
 
         // ~/Library/Containers/
-        check_associated(&home.join("Library/Containers").join(id), AssociatedKind::Container, &mut files);
+        check_associated(
+            &home.join("Library/Containers").join(id),
+            AssociatedKind::Container,
+            &mut files,
+        );
 
         // ~/Library/Group Containers/
         check_glob_associated(
@@ -234,19 +259,33 @@ pub fn find_associated_files(app_name: &str, bundle_id: Option<&str>) -> Vec<Ass
 
         // ~/Library/Cookies/
         check_associated(
-            &home.join("Library/Cookies").join(format!("{}.binarycookies", id)),
+            &home
+                .join("Library/Cookies")
+                .join(format!("{}.binarycookies", id)),
             AssociatedKind::Cookies,
             &mut files,
         );
 
         // ~/Library/HTTPStorages/
-        check_associated(&home.join("Library/HTTPStorages").join(id), AssociatedKind::HttpStorage, &mut files);
+        check_associated(
+            &home.join("Library/HTTPStorages").join(id),
+            AssociatedKind::HttpStorage,
+            &mut files,
+        );
 
         // ~/Library/WebKit/
-        check_associated(&home.join("Library/WebKit").join(id), AssociatedKind::WebKit, &mut files);
+        check_associated(
+            &home.join("Library/WebKit").join(id),
+            AssociatedKind::WebKit,
+            &mut files,
+        );
 
         // ~/Library/Logs/
-        check_associated(&home.join("Library/Logs").join(id), AssociatedKind::Logs, &mut files);
+        check_associated(
+            &home.join("Library/Logs").join(id),
+            AssociatedKind::Logs,
+            &mut files,
+        );
 
         // Launch Agents
         check_glob_associated(
@@ -285,10 +324,12 @@ fn check_associated(path: &Path, kind: AssociatedKind, files: &mut Vec<Associate
         if path.is_dir() {
             crate::scanner::walker::dir_size(path)
         } else {
-            std::fs::metadata(path).map(|m| {
-                use std::os::darwin::fs::MetadataExt;
-                m.st_blocks() * 512
-            }).unwrap_or(0)
+            std::fs::metadata(path)
+                .map(|m| {
+                    use std::os::darwin::fs::MetadataExt;
+                    m.st_blocks() * 512
+                })
+                .unwrap_or(0)
         }
     } else {
         0
@@ -305,7 +346,12 @@ fn check_associated(path: &Path, kind: AssociatedKind, files: &mut Vec<Associate
 }
 
 /// Check for matching files using glob pattern
-fn check_glob_associated(dir: &Path, pattern: &str, kind: AssociatedKind, files: &mut Vec<AssociatedFile>) {
+fn check_glob_associated(
+    dir: &Path,
+    pattern: &str,
+    kind: AssociatedKind,
+    files: &mut Vec<AssociatedFile>,
+) {
     if !dir.exists() {
         return;
     }

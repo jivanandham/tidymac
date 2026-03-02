@@ -100,9 +100,15 @@ impl Default for ProfileThresholds {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_stale() -> u32 { 30 }
-fn default_large() -> u64 { 500 }
+fn default_true() -> bool {
+    true
+}
+fn default_stale() -> u32 {
+    30
+}
+fn default_large() -> u64 {
+    500
+}
 
 impl Profile {
     /// Load a profile by name
@@ -122,7 +128,10 @@ impl Profile {
             return Ok(profile);
         }
 
-        anyhow::bail!("Profile '{}' not found. Available: quick, developer, creative, deep", name)
+        anyhow::bail!(
+            "Profile '{}' not found. Available: quick, developer, creative, deep",
+            name
+        )
     }
 
     /// Check if dev project scanning is enabled
@@ -271,8 +280,8 @@ fn builtin_profile(name: &str) -> Option<Profile> {
         "creative" => Some(Profile {
             profile: ProfileMeta {
                 name: "creative".into(),
-                description: "Clean up after creative work — render caches, previews, scratch files"
-                    .into(),
+                description:
+                    "Clean up after creative work — render caches, previews, scratch files".into(),
                 aggression: Aggression::Medium,
             },
             targets: ProfileTargets {

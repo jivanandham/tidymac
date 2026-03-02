@@ -10,87 +10,39 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build & Release
     runs-on: macos-latest
-    strategy:
-      matrix:
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchains
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
 
-      - name: Package binary
+      - name: Build TidyMac App & DMG
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czf tidymac-${{ matrix.target }}.tar.gz tidymac
-          shasum -a 256 tidymac-${{ matrix.target }}.tar.gz > tidymac-${{ matrix.target }}.tar.gz.sha256
+          chmod +x scripts/build-dmg.sh
+          ./scripts/build-dmg.sh
+        env:
+          CODESIGN_IDENTITY: "-" # Ad-hoc signing for CI
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tidymac-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/tidymac-${{ matrix.target }}.tar.gz
-            target/${{ matrix.target }}/release/tidymac-${{ matrix.target }}.tar.gz.sha256
-
-  universal:
-    name: Create Universal Binary
-    needs: build
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download arm64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: tidymac-aarch64-apple-darwin
-          path: arm64
-
-      - name: Download x86_64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: tidymac-x86_64-apple-darwin
-          path: x86_64
-
-      - name: Extract binaries
+      - name: Generate Checksums
         run: |
-          cd arm64 && tar -xzf tidymac-aarch64-apple-darwin.tar.gz && cd ..
-          cd x86_64 && tar -xzf tidymac-x86_64-apple-darwin.tar.gz && cd ..
+          cd build
+          shasum -a 256 TidyMac.dmg > TidyMac.dmg.sha256
 
-      - name: Create universal binary with lipo
-        run: |
-          lipo -create arm64/tidymac x86_64/tidymac -output tidymac
-          file tidymac
-          tar -czf tidymac-universal-apple-darwin.tar.gz tidymac
-          shasum -a 256 tidymac-universal-apple-darwin.tar.gz > tidymac-universal-apple-darwin.tar.gz.sha256
-
-      - name: Generate shell completions
-        run: |
-          chmod +x arm64/tidymac
-          arm64/tidymac completions bash > tidymac.bash
-          arm64/tidymac completions zsh > _tidymac
-          arm64/tidymac completions fish > tidymac.fish
-          tar -czf tidymac-completions.tar.gz tidymac.bash _tidymac tidymac.fish
-
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            arm64/tidymac-aarch64-apple-darwin.tar.gz
-            arm64/tidymac-aarch64-apple-darwin.tar.gz.sha256
-            x86_64/tidymac-x86_64-apple-darwin.tar.gz
-            x86_64/tidymac-x86_64-apple-darwin.tar.gz.sha256
-            tidymac-universal-apple-darwin.tar.gz
-            tidymac-universal-apple-darwin.tar.gz.sha256
-            tidymac-completions.tar.gz
+            build/TidyMac.dmg
+            build/TidyMac.dmg.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

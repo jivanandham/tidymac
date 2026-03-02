@@ -101,10 +101,8 @@ pub fn get_docker_usage() -> DockerUsage {
         reclaimable: 0,
     };
 
-    usage.total_size = usage.images.size
-        + usage.containers.size
-        + usage.volumes.size
-        + usage.build_cache.size;
+    usage.total_size =
+        usage.images.size + usage.containers.size + usage.volumes.size + usage.build_cache.size;
     usage.reclaimable = usage.images.reclaimable
         + usage.containers.reclaimable
         + usage.volumes.reclaimable
@@ -119,7 +117,11 @@ fn get_image_info() -> DockerCategory {
 
     // List all images
     let output = std::process::Command::new("docker")
-        .args(["images", "--format", "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}"])
+        .args([
+            "images",
+            "--format",
+            "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
+        ])
         .output();
 
     if let Ok(out) = output {
@@ -169,7 +171,12 @@ fn get_container_info() -> DockerCategory {
     let mut cat = DockerCategory::empty("Containers");
 
     let output = std::process::Command::new("docker")
-        .args(["ps", "-a", "--format", "{{.ID}}\t{{.Names}}\t{{.Size}}\t{{.CreatedAt}}\t{{.Status}}"])
+        .args([
+            "ps",
+            "-a",
+            "--format",
+            "{{.ID}}\t{{.Names}}\t{{.Size}}\t{{.CreatedAt}}\t{{.Status}}",
+        ])
         .output();
 
     if let Ok(out) = output {
@@ -264,7 +271,12 @@ fn get_build_cache_info() -> DockerCategory {
 /// Parse size from `docker system df` output for a specific type
 fn parse_docker_df_size(type_name: &str) -> u64 {
     let output = std::process::Command::new("docker")
-        .args(["system", "df", "--format", "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}"])
+        .args([
+            "system",
+            "df",
+            "--format",
+            "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
+        ])
         .output();
 
     if let Ok(out) = output {
@@ -423,7 +435,10 @@ mod tests {
         assert_eq!(parse_size_string("100B"), 100);
         assert_eq!(parse_size_string("1KB"), 1024);
         assert_eq!(parse_size_string("1MB"), 1048576);
-        assert_eq!(parse_size_string("1.5GB"), (1.5 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(
+            parse_size_string("1.5GB"),
+            (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
         assert_eq!(parse_size_string("2.5MB"), (2.5 * 1024.0 * 1024.0) as u64);
         assert_eq!(parse_size_string(""), 0);
     }

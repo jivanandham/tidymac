@@ -177,7 +177,11 @@ pub enum Commands {
     },
 
     /// Show cleanup history and staging status
-    Status,
+    Status {
+        /// Generate a diagnostics zip file for support
+        #[arg(long)]
+        diagnostics: bool,
+    },
 
     /// Generate shell completions
     Completions {

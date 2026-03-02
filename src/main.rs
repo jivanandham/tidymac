@@ -1,14 +1,22 @@
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
+use std::path::PathBuf;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+use tidymac::cleaner::{self, CleanManifest, CleanMode};
 use tidymac::cli::args::{Cli, Commands, ConfigAction, OutputFormat};
 use tidymac::cli::output;
-use tidymac::cleaner::{self, CleanManifest, CleanMode};
 use tidymac::common::config::Config;
 use tidymac::common::format;
 use tidymac::profiles::loader::Profile;
 use tidymac::scanner;
+
+use tidymac::common::observability;
+
+fn setup_logging(verbose: bool) -> Result<()> {
+    observability::init(verbose, None)
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -17,11 +25,9 @@ fn main() -> Result<()> {
         colored::control::set_override(false);
     }
 
-    if cli.verbose {
-        tracing_subscriber::fmt()
-            .with_env_filter("tidymac=debug")
-            .init();
-    }
+    setup_logging(cli.verbose).unwrap_or_else(|e| {
+        eprintln!("Failed to initialize logging: {}", e);
+    });
 
     match cli.command {
         Commands::Scan {
@@ -69,10 +75,14 @@ fn main() -> Result<()> {
 
         Commands::Viz { interactive } => cmd_viz(&cli, interactive),
 
-        Commands::Docker { prune, dry_run, yes } => cmd_docker(&cli, prune, dry_run, yes),
+        Commands::Docker {
+            prune,
+            dry_run,
+            yes,
+        } => cmd_docker(&cli, prune, dry_run, yes),
 
         Commands::Config { action } => cmd_config(action),
-        Commands::Status => cmd_status(),
+        Commands::Status { diagnostics } => cmd_status(diagnostics),
 
         Commands::Completions { shell } => {
             use clap::CommandFactory;
@@ -134,7 +144,10 @@ fn cmd_dup(
     // Expand ~ in path
     let root = if path.starts_with('~') {
         let home = dirs::home_dir().unwrap_or_default();
-        home.join(path.strip_prefix("~/").unwrap_or(path.strip_prefix('~').unwrap_or(path)))
+        home.join(
+            path.strip_prefix("~/")
+                .unwrap_or(path.strip_prefix('~').unwrap_or(path)),
+        )
     } else {
         std::path::PathBuf::from(path)
     };
@@ -155,7 +168,8 @@ fn cmd_dup(
         if perceptual {
             println!(
                 "  {} Perceptual image matching enabled (threshold: {:.0}%)",
-                "🖼️", threshold * 100.0
+                "🖼️",
+                threshold * 100.0
             );
         }
         println!();
@@ -249,7 +263,11 @@ fn cmd_clean(cli: &Cli, hard: bool, yes: bool, dry_run: bool) -> Result<()> {
 
     // Confirm unless --yes
     if !yes {
-        let mode_label = if hard { "PERMANENTLY DELETE" } else { "soft delete" };
+        let mode_label = if hard {
+            "PERMANENTLY DELETE"
+        } else {
+            "soft delete"
+        };
         print!(
             "\n  {} {} {} ({})? [y/N] ",
             "❓",
@@ -301,7 +319,11 @@ fn cmd_privacy(cli: &Cli, action: &tidymac::cli::args::PrivacyAction) -> Result<
     use tidymac::cli::args::PrivacyAction;
 
     match action {
-        PrivacyAction::Scan { browsers, cookies, all } => {
+        PrivacyAction::Scan {
+            browsers,
+            cookies,
+            all,
+        } => {
             let scan_browsers = *browsers || *all;
             let scan_cookies = *cookies || *all;
 
@@ -503,12 +525,10 @@ fn cmd_docker(cli: &Cli, prune: bool, dry_run: bool, yes: bool) -> Result<()> {
 
         match cli.format {
             OutputFormat::Human => output::print_docker_usage(&usage),
-            OutputFormat::Json => {
-                match serde_json::to_string_pretty(&usage) {
-                    Ok(s) => println!("{}", s),
-                    Err(e) => eprintln!("Error: {}", e),
-                }
-            }
+            OutputFormat::Json => match serde_json::to_string_pretty(&usage) {
+                Ok(s) => println!("{}", s),
+                Err(e) => eprintln!("Error: {}", e),
+            },
             OutputFormat::Quiet => {
                 println!(
                     "{}  {}  {}",
@@ -526,10 +546,14 @@ fn cmd_docker(cli: &Cli, prune: bool, dry_run: bool, yes: bool) -> Result<()> {
 // ─── Apps ─────────────────────────────────────────────────────────────────────
 
 fn cmd_apps(cli: &Cli, action: &tidymac::cli::args::AppsAction) -> Result<()> {
-    use tidymac::cli::args::{AppsAction, AppSort};
+    use tidymac::cli::args::{AppSort, AppsAction};
 
     match action {
-        AppsAction::List { sort, detailed, unused_days } => {
+        AppsAction::List {
+            sort,
+            detailed,
+            unused_days,
+        } => {
             let show_progress = !cli.quiet && matches!(cli.format, OutputFormat::Human);
             if show_progress {
                 println!();
@@ -542,16 +566,14 @@ fn cmd_apps(cli: &Cli, action: &tidymac::cli::args::AppsAction) -> Result<()> {
             if let Some(days) = unused_days {
                 let threshold = std::time::SystemTime::now()
                     - std::time::Duration::from_secs(*days as u64 * 86400);
-                apps.retain(|a| {
-                    a.last_opened
-                        .map(|t| t < threshold)
-                        .unwrap_or(true)
-                });
+                apps.retain(|a| a.last_opened.map(|t| t < threshold).unwrap_or(true));
             }
 
             // Sort
             match sort {
-                AppSort::Name => apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                AppSort::Name => {
+                    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                }
                 AppSort::Size => apps.sort_by(|a, b| b.total_size.cmp(&a.total_size)),
                 AppSort::LastOpened => apps.sort_by(|a, b| b.last_opened.cmp(&a.last_opened)),
             }
@@ -597,7 +619,11 @@ fn cmd_apps(cli: &Cli, action: &tidymac::cli::args::AppsAction) -> Result<()> {
             Ok(())
         }
 
-        AppsAction::Remove { ref name, dry_run, yes } => {
+        AppsAction::Remove {
+            ref name,
+            dry_run,
+            yes,
+        } => {
             let apps = tidymac::apps::discover_apps();
             let matches = tidymac::apps::find_app_by_name(&apps, name);
 
@@ -619,7 +645,9 @@ fn cmd_apps(cli: &Cli, action: &tidymac::cli::args::AppsAction) -> Result<()> {
             if !dry_run && !yes {
                 print!(
                     "  {} Remove '{}' and all associated files ({})? [y/N] ",
-                    "❓", app.name, format::format_size(app.total_size)
+                    "❓",
+                    app.name,
+                    format::format_size(app.total_size)
                 );
                 use std::io::Write;
                 std::io::stdout().flush()?;
@@ -650,17 +678,20 @@ fn cmd_startup(cli: &Cli, action: &tidymac::cli::args::StartupAction) -> Result<
             match cli.format {
                 OutputFormat::Human => output::print_startup_items(&items),
                 OutputFormat::Json => {
-                    let json: Vec<_> = items.iter().map(|i| {
-                        serde_json::json!({
-                            "label": i.label,
-                            "name": i.name,
-                            "kind": format!("{}", i.kind),
-                            "enabled": i.enabled,
-                            "program": i.program,
-                            "run_at_load": i.run_at_load,
-                            "path": i.path.display().to_string(),
+                    let json: Vec<_> = items
+                        .iter()
+                        .map(|i| {
+                            serde_json::json!({
+                                "label": i.label,
+                                "name": i.name,
+                                "kind": format!("{}", i.kind),
+                                "enabled": i.enabled,
+                                "program": i.program,
+                                "run_at_load": i.run_at_load,
+                                "path": i.path.display().to_string(),
+                            })
                         })
-                    }).collect();
+                        .collect();
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
                 OutputFormat::Quiet => {
@@ -735,10 +766,20 @@ fn cmd_undo(cli: &Cli, last: bool, session: Option<String>, list: bool) -> Resul
             OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&sessions)?),
             OutputFormat::Quiet => {
                 for s in &sessions {
-                    let status = if s.restored { "restored" }
-                        else if s.is_expired { "expired" }
-                        else { "active" };
-                    println!("{}  {}  {}  {}", s.session_id, s.profile, format::format_size(s.staged_size), status);
+                    let status = if s.restored {
+                        "restored"
+                    } else if s.is_expired {
+                        "expired"
+                    } else {
+                        "active"
+                    };
+                    println!(
+                        "{}  {}  {}  {}",
+                        s.session_id,
+                        s.profile,
+                        format::format_size(s.staged_size),
+                        status
+                    );
                 }
             }
         }
@@ -758,18 +799,27 @@ fn cmd_undo(cli: &Cli, last: bool, session: Option<String>, list: bool) -> Resul
         println!();
         println!("  Usage:");
         println!("    {} Restore last session", "tidymac undo --last".cyan());
-        println!("    {} Restore specific", "tidymac undo --session <ID>".cyan());
+        println!(
+            "    {} Restore specific",
+            "tidymac undo --session <ID>".cyan()
+        );
         println!("    {} List all", "tidymac undo --list".cyan());
         println!();
 
         let sessions = CleanManifest::list_sessions()?;
-        let active: Vec<_> = sessions.iter().filter(|s| !s.restored && !s.is_expired).collect();
+        let active: Vec<_> = sessions
+            .iter()
+            .filter(|s| !s.restored && !s.is_expired)
+            .collect();
         if !active.is_empty() {
             println!("  Active sessions:");
             for s in active.iter().take(5) {
                 println!(
                     "    {} {} — {} ({} files)",
-                    "•".dimmed(), s.session_id, format::format_size(s.staged_size), s.total_files
+                    "•".dimmed(),
+                    s.session_id,
+                    format::format_size(s.staged_size),
+                    s.total_files
                 );
             }
             println!();
@@ -784,12 +834,19 @@ fn cmd_undo(cli: &Cli, last: bool, session: Option<String>, list: bool) -> Resul
         return Ok(());
     }
 
-    let restorable_count = manifest.items.iter().filter(|i| i.success && i.staged_path.is_some()).count();
+    let restorable_count = manifest
+        .items
+        .iter()
+        .filter(|i| i.success && i.staged_path.is_some())
+        .count();
 
     println!();
     println!(
         "  {} Restoring session '{}' — {} files ({})",
-        "↩️", session_id.cyan(), restorable_count, format::format_size(manifest.total_bytes)
+        "↩️",
+        session_id.cyan(),
+        restorable_count,
+        format::format_size(manifest.total_bytes)
     );
 
     let show_progress = !cli.quiet && matches!(cli.format, OutputFormat::Human);
@@ -807,7 +864,12 @@ fn cmd_undo(cli: &Cli, last: bool, session: Option<String>, list: bool) -> Resul
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
         OutputFormat::Quiet => {
-            println!("{}  {}  {}", report.session_id, report.restored_count, format::format_size(report.restored_bytes));
+            println!(
+                "{}  {}  {}",
+                report.session_id,
+                report.restored_count,
+                format::format_size(report.restored_bytes)
+            );
         }
     }
 
@@ -834,8 +896,16 @@ fn cmd_purge(
         }
         std::fs::write(&plist_path, &plist_content)?;
 
-        println!("  {} Installed auto-purge plist: {}", "✓".green(), plist_path.display());
-        println!("  {} Load with: {}", "💡", format!("launchctl load {}", plist_path.display()).cyan());
+        println!(
+            "  {} Installed auto-purge plist: {}",
+            "✓".green(),
+            plist_path.display()
+        );
+        println!(
+            "  {} Load with: {}",
+            "💡",
+            format!("launchctl load {}", plist_path.display()).cyan()
+        );
         println!("  Expired sessions will be purged daily at 3:00 AM.");
         println!();
         return Ok(());
@@ -855,7 +925,12 @@ fn cmd_purge(
             }
         }
         let freed = cleaner::purge_session(&sid)?;
-        println!("  {} Purged '{}', freed {}", "🔥", sid, format::format_size(freed));
+        println!(
+            "  {} Purged '{}', freed {}",
+            "🔥",
+            sid,
+            format::format_size(freed)
+        );
         return Ok(());
     }
 
@@ -867,7 +942,9 @@ fn cmd_purge(
         if !yes {
             print!(
                 "  {} Permanently purge ALL {} sessions ({})? [y/N] ",
-                "❓", sessions.len(), format::format_size(total)
+                "❓",
+                sessions.len(),
+                format::format_size(total)
             );
             use std::io::Write;
             std::io::stdout().flush()?;
@@ -898,16 +975,29 @@ fn cmd_purge(
     println!("  Usage:");
     println!("    {} Expired only", "tidymac purge --expired".cyan());
     println!("    {} ALL sessions", "tidymac purge --all".cyan());
-    println!("    {} Specific session", "tidymac purge --session <ID>".cyan());
-    println!("    {} Auto-purge daily", "tidymac purge --install-auto".cyan());
+    println!(
+        "    {} Specific session",
+        "tidymac purge --session <ID>".cyan()
+    );
+    println!(
+        "    {} Auto-purge daily",
+        "tidymac purge --install-auto".cyan()
+    );
     println!();
 
     let health = cleaner::check_staging_health()?;
-    println!("  Staging: {} sessions, {} total", health.session_count, format::format_size(health.total_size));
+    println!(
+        "  Staging: {} sessions, {} total",
+        health.session_count,
+        format::format_size(health.total_size)
+    );
     if health.expired_count > 0 {
         println!(
             "  {} {} expired ({}) — run {}",
-            "⚠".yellow(), health.expired_count, format::format_size(health.expired_size), "tidymac purge --expired".cyan()
+            "⚠".yellow(),
+            health.expired_count,
+            format::format_size(health.expired_size),
+            "tidymac purge --expired".cyan()
         );
     }
     println!();
@@ -953,7 +1043,10 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
         }
         ConfigAction::ClearCache => {
             tidymac::scanner::cache::ScanCache::clear()?;
-            println!("  {} Scan cache cleared. Next scan will be fresh.", "✓".green());
+            println!(
+                "  {} Scan cache cleared. Next scan will be fresh.",
+                "✓".green()
+            );
             Ok(())
         }
     }
@@ -961,8 +1054,12 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
 
 // ─── Status ───────────────────────────────────────────────────────────────────
 
-fn cmd_status() -> Result<()> {
+fn cmd_status(diagnostics: bool) -> Result<()> {
     let config = Config::load()?;
+
+    if diagnostics {
+        return generate_diagnostics();
+    }
 
     println!();
     println!("  {} TidyMac Status", "📊");
@@ -970,20 +1067,31 @@ fn cmd_status() -> Result<()> {
     println!();
 
     println!("  {} Default profile: {}", "⚙️", config.default_profile);
-    println!("  {} Staging retention: {} days", "⚙️", config.staging_retention_days);
-    println!("  {} Large file threshold: {} MB", "⚙️", config.large_file_threshold_mb);
+    println!(
+        "  {} Staging retention: {} days",
+        "⚙️", config.staging_retention_days
+    );
+    println!(
+        "  {} Large file threshold: {} MB",
+        "⚙️", config.large_file_threshold_mb
+    );
 
     // Staging health
     let health = cleaner::check_staging_health()?;
     println!();
     println!(
         "  {} Staging: {} sessions, {} used",
-        "📦", health.session_count, format::format_size(health.total_size)
+        "📦",
+        health.session_count,
+        format::format_size(health.total_size)
     );
     if health.expired_count > 0 {
         println!(
             "  {} {} expired ({}) — run {}",
-            "⚠".yellow(), health.expired_count, format::format_size(health.expired_size), "tidymac purge --expired".cyan()
+            "⚠".yellow(),
+            health.expired_count,
+            format::format_size(health.expired_size),
+            "tidymac purge --expired".cyan()
         );
     }
     output::print_staging_health(&health);
@@ -992,7 +1100,9 @@ fn cmd_status() -> Result<()> {
     if let Some(cache) = tidymac::scanner::cache::ScanCache::load(&config.default_profile) {
         println!(
             "  {} Scan cache: {} entries, updated {}",
-            "⚡", cache.entry_count(), cache.age_string()
+            "⚡",
+            cache.entry_count(),
+            cache.age_string()
         );
     } else {
         println!("  {} Scan cache: empty (first scan will populate)", "⚡");
@@ -1003,12 +1113,20 @@ fn cmd_status() -> Result<()> {
     if !sessions.is_empty() {
         println!("  {} Recent sessions:", "📋");
         for s in sessions.iter().take(5) {
-            let status = if s.restored { "restored".green().to_string() }
-                else if s.is_expired { "expired".red().to_string() }
-                else { "active".yellow().to_string() };
+            let status = if s.restored {
+                "restored".green().to_string()
+            } else if s.is_expired {
+                "expired".red().to_string()
+            } else {
+                "active".yellow().to_string()
+            };
             println!(
                 "    {} {} — {} ({} files) [{}]",
-                "•".dimmed(), s.session_id, format::format_size(s.total_bytes), s.total_files, status
+                "•".dimmed(),
+                s.session_id,
+                format::format_size(s.total_bytes),
+                s.total_files,
+                status
             );
         }
     }
@@ -1020,5 +1138,53 @@ fn cmd_status() -> Result<()> {
     }
     println!();
 
+    Ok(())
+}
+
+fn generate_diagnostics() -> Result<()> {
+    use std::fs::File;
+    use std::io::Write;
+
+    let zip_path = std::env::current_dir()?.join("tidymac_diagnostics.zip");
+    println!(
+        "{} Generating diagnostics archive at: {}",
+        "📦".cyan(),
+        zip_path.display()
+    );
+
+    let file = File::create(&zip_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o755);
+
+    // 1. Add Config
+    let config_path = tidymac::common::config::Config::config_path();
+    if config_path.exists() {
+        zip.start_file("config.toml", options)?;
+        if let Ok(content) = std::fs::read(&config_path) {
+            zip.write_all(&content)?;
+        }
+    }
+
+    // 2. Add Logs
+    let log_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("Library/Logs/TidyMac");
+
+    if log_dir.exists() {
+        for entry in std::fs::read_dir(log_dir)?.filter_map(|e| e.ok()) {
+            if entry.file_type()?.is_file() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                zip.start_file(format!("logs/{}", name), options)?;
+                if let Ok(content) = std::fs::read(entry.path()) {
+                    zip.write_all(&content)?;
+                }
+            }
+        }
+    }
+
+    zip.finish()?;
+    println!("{} Diagnostics generated successfully.", "✓".green());
     Ok(())
 }

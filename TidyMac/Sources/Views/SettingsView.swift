@@ -1,19 +1,24 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @State private var selectedProfile = "developer"
-    @State private var staleDays: Double = 30
-    @State private var retentionDays: Double = 7
-    @State private var showLargeFiles = true
-    @State private var largeFileThresholdMB: Double = 100
+    @AppStorage("defaultProfile") private var selectedProfile = "developer"
+    @AppStorage("staleDays") private var staleDays: Double = 30
+    @AppStorage("retentionDays") private var retentionDays: Double = 7
+    @AppStorage("showLargeFiles") private var showLargeFiles = true
+    @AppStorage("largeFileThresholdMB") private var largeFileThresholdMB: Double = 100
+    @AppStorage("accentColor") private var accentColor = "emerald"
+
+    @StateObject private var appViewModel = AppViewModel()
 
     var body: some View {
         TabView {
             GeneralSettingsTab(
                 selectedProfile: $selectedProfile,
                 staleDays: $staleDays,
-                retentionDays: $retentionDays
+                retentionDays: $retentionDays,
+                accentColor: $accentColor
             )
+            .environmentObject(appViewModel)
             .tabItem {
                 Label("General", systemImage: "gearshape")
             }
@@ -39,9 +44,50 @@ struct GeneralSettingsTab: View {
     @Binding var selectedProfile: String
     @Binding var staleDays: Double
     @Binding var retentionDays: Double
+    @Binding var accentColor: String
+    @EnvironmentObject var appViewModel: AppViewModel
 
     var body: some View {
         Form {
+            Section("App Sandbox Permissions") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("TidyMac runs in a secure sandbox. You must explicitly grant access to folders you want to scan and clean.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    if appViewModel.hasFullDiskAccess {
+                        HStack {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundColor(.green)
+                            Text("Access granted to \(appViewModel.selectedFolders.count) folder(s)")
+                        }
+                    } else {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("No folders authorized")
+                        }
+                    }
+                    
+                    Button("Manage Folder Access...") {
+                        appViewModel.requestFolderAccess()
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            
+            Section("Appearance") {
+                Picker("Accent Color", selection: $accentColor) {
+                    Label("Emerald", systemImage: "circle.fill").tint(.green).tag("emerald")
+                    Label("Teal", systemImage: "circle.fill").tint(.teal).tag("teal")
+                    Label("Sapphire", systemImage: "circle.fill").tint(.blue).tag("sapphire")
+                    Label("Coral", systemImage: "circle.fill").tint(.orange).tag("coral")
+                    Label("Amber", systemImage: "circle.fill").tint(.yellow).tag("amber")
+                    Label("Lavender", systemImage: "circle.fill").tint(.purple).tag("lavender")
+                    Label("Rose", systemImage: "circle.fill").tint(.pink).tag("rose")
+                }
+            }
+            
             Section("Default Profile") {
                 Picker("Profile", selection: $selectedProfile) {
                     Text("Quick Sweep").tag("quick")
@@ -56,6 +102,8 @@ struct GeneralSettingsTab: View {
                 HStack {
                     Text("Consider files stale after")
                     Slider(value: $staleDays, in: 7...90, step: 1)
+                        .accessibilityLabel("Stale threshold")
+                        .accessibilityValue("\(Int(staleDays)) days")
                     Text("\(Int(staleDays)) days")
                         .frame(width: 60, alignment: .trailing)
                         .monospacedDigit()
@@ -66,6 +114,8 @@ struct GeneralSettingsTab: View {
                 HStack {
                     Text("Keep soft-deleted files for")
                     Slider(value: $retentionDays, in: 1...30, step: 1)
+                        .accessibilityLabel("Retention period")
+                        .accessibilityValue("\(Int(retentionDays)) days")
                     Text("\(Int(retentionDays)) days")
                         .frame(width: 60, alignment: .trailing)
                         .monospacedDigit()
@@ -85,11 +135,14 @@ struct ScanSettingsTab: View {
         Form {
             Section("Large Files") {
                 Toggle("Scan for large files", isOn: $showLargeFiles)
+                    .accessibilityLabel("Enable large file scanning")
 
                 if showLargeFiles {
                     HStack {
                         Text("Minimum size")
                         Slider(value: $largeFileThresholdMB, in: 10...500, step: 10)
+                            .accessibilityLabel("Large file threshold")
+                            .accessibilityValue("\(Int(largeFileThresholdMB)) Megabytes")
                         Text("\(Int(largeFileThresholdMB)) MB")
                             .frame(width: 60, alignment: .trailing)
                             .monospacedDigit()
@@ -120,7 +173,7 @@ struct AboutTab: View {
 
             Image(systemName: "leaf.fill")
                 .font(.system(size: 48))
-                .foregroundStyle(.green)
+                .foregroundStyle(TidyTheme.primaryGradient)
 
             Text("TidyMac")
                 .font(.title)

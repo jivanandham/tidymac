@@ -15,7 +15,10 @@ fn test_quick_hash_identical_files() {
     let hash1 = hasher::quick_hash(&file1).unwrap();
     let hash2 = hasher::quick_hash(&file2).unwrap();
 
-    assert_eq!(hash1, hash2, "Identical files should produce identical quick hashes");
+    assert_eq!(
+        hash1, hash2,
+        "Identical files should produce identical quick hashes"
+    );
 }
 
 #[test]
@@ -30,7 +33,10 @@ fn test_quick_hash_different_files() {
     let hash1 = hasher::quick_hash(&file1).unwrap();
     let hash2 = hasher::quick_hash(&file2).unwrap();
 
-    assert_ne!(hash1, hash2, "Different files should produce different hashes");
+    assert_ne!(
+        hash1, hash2,
+        "Different files should produce different hashes"
+    );
 }
 
 #[test]
@@ -73,7 +79,10 @@ fn test_full_hash_differs_from_quick_when_content_differs_after_4kb() {
     // Full hashes should differ
     let fh1 = hasher::full_hash(&file1).unwrap();
     let fh2 = hasher::full_hash(&file2).unwrap();
-    assert_ne!(fh1, fh2, "Full hashes should differ (content differs after 4KB)");
+    assert_ne!(
+        fh1, fh2,
+        "Full hashes should differ (content differs after 4KB)"
+    );
 }
 
 #[test]
@@ -138,7 +147,11 @@ fn test_group_by_full_hash() {
     ];
 
     let groups = hasher::group_by_full_hash(&files);
-    assert_eq!(groups.len(), 1, "Should have 1 hash group for the duplicates");
+    assert_eq!(
+        groups.len(),
+        1,
+        "Should have 1 hash group for the duplicates"
+    );
 }
 
 #[test]
@@ -148,8 +161,14 @@ fn test_empty_file_hashing() {
     std::fs::write(&file, b"").unwrap();
 
     let hash = hasher::quick_hash(&file).unwrap();
-    assert!(!hash.is_empty(), "Hash of empty file should still produce a value");
+    assert!(
+        !hash.is_empty(),
+        "Hash of empty file should still produce a value"
+    );
 
     let full = hasher::full_hash(&file).unwrap();
-    assert_eq!(hash, full, "Quick and full hash of empty file should be identical");
+    assert_eq!(
+        hash, full,
+        "Quick and full hash of empty file should be identical"
+    );
 }

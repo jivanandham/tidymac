@@ -19,7 +19,15 @@ pub fn run_scan(
     stale_days: u32,
     large_file_threshold: u64,
 ) -> Result<ScanResults> {
-    run_scan_with_cache(targets, show_progress, include_dev_projects, stale_days, large_file_threshold, true, "quick")
+    run_scan_with_cache(
+        targets,
+        show_progress,
+        include_dev_projects,
+        stale_days,
+        large_file_threshold,
+        true,
+        "quick",
+    )
 }
 
 /// Main scan with cache control
@@ -43,9 +51,7 @@ pub fn run_scan_with_cache(
     };
 
     // Set up progress bar
-    let total_steps = targets.len()
-        + if include_dev_projects { 2 } else { 0 }
-        + 1;
+    let total_steps = targets.len() + if include_dev_projects { 2 } else { 0 } + 1;
 
     let pb = if show_progress {
         let pb = ProgressBar::new(total_steps as u64);
@@ -187,7 +193,9 @@ pub fn run_scan_with_cache(
     }
 
     // Sort by size descending
-    results.items.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    results
+        .items
+        .sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
 
     // Calculate totals
     results.recalculate();

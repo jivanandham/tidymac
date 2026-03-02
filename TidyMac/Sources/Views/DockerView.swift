@@ -141,6 +141,8 @@ struct StatusPill: View {
             (isActive ? activeColor : .gray).opacity(0.1),
             in: Capsule()
         )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Docker \(label): \(isActive ? "Active" : "Inactive")")
     }
 }
 
@@ -163,5 +165,7 @@ struct DockerStatCard: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Docker \(title): \(value)")
     }
 }

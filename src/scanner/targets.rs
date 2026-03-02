@@ -33,9 +33,15 @@ pub enum DevTool {
     Gradle,
     Maven,
     Cargo,
+    CargoTarget,
     Npm,
     Yarn,
+    YarnBerry,
     Pnpm,
+    Go,
+    RubyGems,
+    Terraform,
+    Ivy2,
 }
 
 impl std::fmt::Display for DevTool {
@@ -54,9 +60,15 @@ impl std::fmt::Display for DevTool {
             DevTool::Gradle => write!(f, "Gradle"),
             DevTool::Maven => write!(f, "Maven"),
             DevTool::Cargo => write!(f, "Cargo"),
+            DevTool::CargoTarget => write!(f, "Cargo target/ dirs"),
             DevTool::Npm => write!(f, "npm"),
-            DevTool::Yarn => write!(f, "Yarn"),
+            DevTool::Yarn => write!(f, "Yarn Classic"),
+            DevTool::YarnBerry => write!(f, "Yarn Berry"),
             DevTool::Pnpm => write!(f, "pnpm"),
+            DevTool::Go => write!(f, "Go module cache"),
+            DevTool::RubyGems => write!(f, "Ruby Gems"),
+            DevTool::Terraform => write!(f, "Terraform plugins"),
+            DevTool::Ivy2 => write!(f, "JVM / Ivy2 cache"),
         }
     }
 }
@@ -142,7 +154,7 @@ pub struct FileEntry {
 }
 
 /// Complete scan results
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScanResults {
     /// When the scan was performed
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -167,11 +179,7 @@ impl ScanResults {
     pub fn new() -> Self {
         Self {
             timestamp: chrono::Utc::now(),
-            duration_secs: 0.0,
-            items: Vec::new(),
-            total_reclaimable: 0,
-            total_files: 0,
-            errors: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -263,9 +271,7 @@ pub fn system_junk_targets() -> Vec<ScanTarget> {
         ScanTarget {
             name: "QuickLook Thumbnails".into(),
             category: Category::SystemCache,
-            paths: vec![
-                "~/Library/Caches/com.apple.QuickLook.thumbnailcache".into(),
-            ],
+            paths: vec!["~/Library/Caches/com.apple.QuickLook.thumbnailcache".into()],
             safety: SafetyLevel::Safe,
             reason: "Thumbnail preview caches — regenerated on demand".into(),
             recursive: true,
@@ -411,6 +417,69 @@ pub fn developer_targets() -> Vec<ScanTarget> {
             recursive: true,
             min_age_days: None,
         },
+        // ── New: pnpm store ───────────────────────────────────────────────────
+        ScanTarget {
+            name: "pnpm Store".into(),
+            category: Category::DevCache(DevTool::Pnpm),
+            paths: vec![
+                "~/.local/share/pnpm/store".into(),
+                "~/Library/pnpm/store".into(),
+            ],
+            safety: SafetyLevel::Safe,
+            reason: "pnpm content-addressable package store — re-installed on demand".into(),
+            recursive: true,
+            min_age_days: None,
+        },
+        // ── New: Yarn Berry (v2+) cache ───────────────────────────────────────
+        ScanTarget {
+            name: "Yarn Berry Cache".into(),
+            category: Category::DevCache(DevTool::YarnBerry),
+            paths: vec!["~/.yarn/cache".into()],
+            safety: SafetyLevel::Safe,
+            reason: "Yarn v2+ (Berry) global package cache — re-downloaded on demand".into(),
+            recursive: true,
+            min_age_days: None,
+        },
+        // ── New: Go module cache ──────────────────────────────────────────────
+        ScanTarget {
+            name: "Go Module Cache".into(),
+            category: Category::DevCache(DevTool::Go),
+            paths: vec!["~/go/pkg/mod".into()],
+            safety: SafetyLevel::Safe,
+            reason: "Go module download cache — re-downloaded with `go get`".into(),
+            recursive: true,
+            min_age_days: None,
+        },
+        // ── New: Ruby Gems ────────────────────────────────────────────────────
+        ScanTarget {
+            name: "Ruby Gems Cache".into(),
+            category: Category::DevCache(DevTool::RubyGems),
+            paths: vec!["~/.gem/ruby".into(), "~/Library/Ruby/Gems".into()],
+            safety: SafetyLevel::Caution,
+            reason: "Ruby gem installations — reinstall with `gem install`".into(),
+            recursive: true,
+            min_age_days: None,
+        },
+        // ── New: Terraform plugin cache ───────────────────────────────────────
+        ScanTarget {
+            name: "Terraform Plugin Cache".into(),
+            category: Category::DevCache(DevTool::Terraform),
+            paths: vec!["~/.terraform.d/plugins".into()],
+            safety: SafetyLevel::Safe,
+            reason: "Terraform provider plugins — re-downloaded with `terraform init`".into(),
+            recursive: true,
+            min_age_days: None,
+        },
+        // ── New: JVM / Ivy2 cache ─────────────────────────────────────────────
+        ScanTarget {
+            name: "JVM / Ivy2 Cache".into(),
+            category: Category::DevCache(DevTool::Ivy2),
+            paths: vec!["~/.ivy2/cache".into(), "~/.sbt".into()],
+            safety: SafetyLevel::Safe,
+            reason: "Ivy/SBT dependency download cache — re-downloaded on next build".into(),
+            recursive: true,
+            min_age_days: None,
+        },
     ]
 }
 
@@ -453,9 +522,7 @@ pub fn mail_targets() -> Vec<ScanTarget> {
         ScanTarget {
             name: "Mail Container Data".into(),
             category: Category::MailAttachment,
-            paths: vec![
-                "~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads".into(),
-            ],
+            paths: vec!["~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads".into()],
             safety: SafetyLevel::Safe,
             reason: "Sandboxed mail attachment cache".into(),
             recursive: true,

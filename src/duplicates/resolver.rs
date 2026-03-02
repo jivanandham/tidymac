@@ -89,7 +89,10 @@ pub fn resolve_group(group: &SimilarGroup, strategy: &ResolveStrategy) -> Resolv
                 .find(|(_, m)| m.path.starts_with(preferred))
                 .map(|(i, _)| i)
                 .unwrap_or(0); // Fall back to first if none in preferred dir
-            (idx, format!("In preferred directory: {}", preferred.display()))
+            (
+                idx,
+                format!("In preferred directory: {}", preferred.display()),
+            )
         }
 
         ResolveStrategy::Interactive => {
@@ -121,9 +124,6 @@ pub fn resolve_group(group: &SimilarGroup, strategy: &ResolveStrategy) -> Resolv
 }
 
 /// Resolve all groups in a result set
-pub fn resolve_all(
-    groups: &[SimilarGroup],
-    strategy: &ResolveStrategy,
-) -> Vec<ResolvedGroup> {
+pub fn resolve_all(groups: &[SimilarGroup], strategy: &ResolveStrategy) -> Vec<ResolvedGroup> {
     groups.iter().map(|g| resolve_group(g, strategy)).collect()
 }
