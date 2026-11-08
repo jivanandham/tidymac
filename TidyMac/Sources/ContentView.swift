@@ -3,7 +3,10 @@ import SwiftUI
 enum SidebarItem: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
     case scan = "Scan & Clean"
+    case diskMap = "Disk Map"
     case apps = "Applications"
+    case leftovers = "Leftovers"
+    case duplicates = "Duplicates"
     case startup = "Startup Items"
     case privacy = "Privacy"
     case docker = "Docker"
@@ -15,7 +18,10 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .dashboard: return "gauge.with.dots.needle.33percent"
         case .scan: return "magnifyingglass"
+        case .diskMap: return "square.grid.3x3.square"
         case .apps: return "app.badge"
+        case .leftovers: return "puzzlepiece.extension"
+        case .duplicates: return "doc.on.doc"
         case .startup: return "bolt.circle"
         case .privacy: return "lock.shield"
         case .docker: return "shippingbox"
@@ -27,7 +33,10 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .dashboard: return TidyTheme.emerald
         case .scan: return TidyTheme.sapphire
+        case .diskMap: return TidyTheme.teal
         case .apps: return TidyTheme.lavender
+        case .leftovers: return TidyTheme.amber
+        case .duplicates: return TidyTheme.coral
         case .startup: return TidyTheme.amber
         case .privacy: return TidyTheme.teal
         case .docker: return TidyTheme.coral
@@ -37,7 +46,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @StateObject private var viewModel = AppViewModel()
+    @ObservedObject var viewModel: AppViewModel
 
     var body: some View {
         NavigationSplitView {
@@ -49,8 +58,14 @@ struct ContentView: View {
                     DashboardView(viewModel: viewModel)
                 case .scan:
                     ScanView(viewModel: viewModel)
+                case .diskMap:
+                    DiskMapView(viewModel: viewModel)
                 case .apps:
                     AppsView(viewModel: viewModel)
+                case .leftovers:
+                    LeftoversView(viewModel: viewModel)
+                case .duplicates:
+                    DuplicatesView(viewModel: viewModel)
                 case .startup:
                     StartupView(viewModel: viewModel)
                 case .privacy:

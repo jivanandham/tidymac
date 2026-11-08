@@ -1,251 +1,108 @@
-use anyhow::{Context, Result};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::path::Path;
+//! Turn scan results into deletion requests for the unified deleter.
 
-use super::manifest::{CleanManifest, ManifestItem};
-use super::staging;
+use anyhow::Result;
+
+use super::deleter::{self, DeleteOptions, DeleteRequest};
+pub use super::deleter::{CleanMode, CleanReport};
+use super::manifest::{CleanManifest, SkippedEntry};
 use crate::common::config::Config;
 use crate::common::format;
-use crate::scanner::targets::ScanItem;
+use crate::scanner::targets::{ScanItem, ToolAction};
 
-/// Clean mode determines how files are removed
-#[derive(Debug, Clone, PartialEq)]
-pub enum CleanMode {
-    /// Show what would be done without doing it
-    DryRun,
-    /// Move to staging area for recovery (default)
-    SoftDelete,
-    /// Permanent removal — no undo
-    HardDelete,
+/// Extra knobs for [`clean_with`].
+#[derive(Debug, Clone, Default)]
+pub struct CleanOptions {
+    pub show_progress: bool,
+    /// Allow operations above the hard item limit.
+    pub force: bool,
+    /// Paths to leave alone even though their item is selected.
+    pub exclude_paths: Vec<std::path::PathBuf>,
 }
 
-impl std::fmt::Display for CleanMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CleanMode::DryRun => write!(f, "dry_run"),
-            CleanMode::SoftDelete => write!(f, "soft_delete"),
-            CleanMode::HardDelete => write!(f, "hard_delete"),
-        }
-    }
-}
-
-/// Report from a clean operation
-#[derive(Debug)]
-pub struct CleanReport {
-    pub mode: CleanMode,
-    pub files_removed: usize,
-    pub bytes_freed: u64,
-    pub session_id: Option<String>,
-    pub errors: Vec<String>,
-}
-
-/// Execute a cleaning operation on the given scan items
+/// Execute a cleaning operation on the given scan items.
 ///
-/// This is the main entry point for all cleaning operations.
-/// - DryRun: just reports what would be done
-/// - SoftDelete: moves files to staging area with manifest for undo
-/// - HardDelete: permanently removes files
-pub fn clean(
-    items: &[ScanItem],
-    mode: CleanMode,
-    profile_name: &str,
-    show_progress: bool,
-) -> Result<CleanReport> {
-    let config = Config::load()?;
-
-    // Ensure TidyMac directories exist
-    Config::init_dirs()?;
-
-    // Safety check: validate no protected paths are being cleaned
-    for item in items {
-        if crate::common::safety::is_protected(&item.path) {
-            anyhow::bail!(
-                "SAFETY: Refusing to clean protected path: {}",
-                item.path.display()
-            );
-        }
-        for f in &item.files {
-            if crate::common::safety::is_protected(&f.path) {
-                anyhow::bail!(
-                    "SAFETY: Refusing to clean protected path: {}",
-                    f.path.display()
-                );
-            }
-        }
-    }
-
-    match mode {
-        CleanMode::DryRun => clean_dry_run(items),
-        CleanMode::SoftDelete => clean_soft_delete(
-            items,
-            profile_name,
-            config.staging_retention_days,
+/// - Only the entries listed in each item are touched — never the item's
+///   root folder.
+/// - Items rebuilt from the scan cache (no entry list) and review-only items
+///   (large files) are skipped.
+/// - Tool-backed items run their tool instead.
+pub fn clean(items: &[ScanItem], mode: CleanMode, profile_name: &str, show_progress: bool) -> Result<CleanReport> {
+    clean_with(
+        items,
+        mode,
+        profile_name,
+        &CleanOptions {
             show_progress,
-        ),
-        CleanMode::HardDelete => clean_hard_delete(items, profile_name, show_progress),
-    }
+            ..Default::default()
+        },
+    )
 }
 
-/// Dry run — just tally up what would be cleaned
-fn clean_dry_run(items: &[ScanItem]) -> Result<CleanReport> {
-    let mut total_files = 0usize;
-    let mut total_bytes = 0u64;
+/// [`clean`] with options.
+pub fn clean_with(items: &[ScanItem], mode: CleanMode, profile_name: &str, opts: &CleanOptions) -> Result<CleanReport> {
+    let (requests, tools, pre_skipped) = requests_for(items, &opts.exclude_paths);
 
-    for item in items {
-        if item.files.is_empty() {
-            total_files += 1;
-            total_bytes += item.size_bytes;
-        } else {
-            total_files += item.files.len();
-            total_bytes += item.files.iter().map(|f| f.size_bytes).sum::<u64>();
-        }
-    }
+    let mut options = DeleteOptions::new(mode, profile_name);
+    options.show_progress = opts.show_progress;
+    options.force = opts.force;
 
-    Ok(CleanReport {
-        mode: CleanMode::DryRun,
-        files_removed: total_files,
-        bytes_freed: total_bytes,
-        session_id: None,
-        errors: Vec::new(),
-    })
-}
-
-/// Soft delete — move files to staging area with manifest
-fn clean_soft_delete(
-    items: &[ScanItem],
-    profile_name: &str,
-    retention_days: u32,
-    show_progress: bool,
-) -> Result<CleanReport> {
-    let mut manifest = CleanManifest::new(profile_name, "soft_delete", retention_days);
-
-    // Stage all files
-    staging::stage_files(items, &mut manifest, show_progress)?;
-
-    // Save the manifest
-    manifest.save().context("Failed to save clean manifest")?;
-
-    let session_id = manifest.session_id.clone();
-    let report = CleanReport {
-        mode: CleanMode::SoftDelete,
-        files_removed: manifest.total_files,
-        bytes_freed: manifest.total_bytes,
-        session_id: Some(session_id),
-        errors: manifest.errors.clone(),
-    };
-
+    let mut report = deleter::execute(requests, tools, &options)?;
+    let mut all_skipped = pre_skipped;
+    all_skipped.append(&mut report.skipped);
+    report.skipped = all_skipped;
     Ok(report)
 }
 
-/// Hard delete — permanently remove files with manifest logging
-fn clean_hard_delete(
+/// Convert scan items into deletion requests and tool actions.
+pub fn requests_for(
     items: &[ScanItem],
-    profile_name: &str,
-    show_progress: bool,
-) -> Result<CleanReport> {
-    let mut manifest = CleanManifest::new(profile_name, "hard_delete", 0);
-
-    // Count total files for progress
-    let total_files: usize = items
-        .iter()
-        .map(|item| {
-            if item.files.is_empty() {
-                1
-            } else {
-                item.files.len()
-            }
-        })
-        .sum();
-
-    let pb = if show_progress {
-        let pb = ProgressBar::new(total_files as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.red} [{bar:40.red/blue}] {pos}/{len} Deleting... {msg}")
-                .unwrap()
-                .progress_chars("━━░"),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    exclude_paths: &[std::path::PathBuf],
+) -> (Vec<DeleteRequest>, Vec<ToolAction>, Vec<SkippedEntry>) {
+    let mut requests = Vec::new();
+    let mut tools: Vec<ToolAction> = Vec::new();
+    let mut skipped = Vec::new();
 
     for item in items {
-        if item.files.is_empty() {
-            // Delete the item path directly
-            let result = hard_delete_path(&item.path);
-            manifest.add_item(ManifestItem {
-                original_path: item.path.clone(),
-                staged_path: None,
-                size_bytes: item.size_bytes,
-                category: format!("{}", item.category),
-                safety: format!("{:?}", item.safety),
-                is_dir: item.path.is_dir(),
-                success: result.is_ok(),
-                error: result.err().map(|e| e.to_string()),
+        if item.from_cache {
+            skipped.push(SkippedEntry {
+                path: item.path.clone(),
+                reason: format!("'{}' came from the scan cache — rescan before cleaning", item.name),
             });
-
-            if let Some(ref pb) = pb {
-                pb.inc(1);
+            continue;
+        }
+        if item.review_only {
+            skipped.push(SkippedEntry {
+                path: item.path.clone(),
+                reason: format!("'{}' is review-only — remove files individually", item.name),
+            });
+            continue;
+        }
+        if let Some(ref action) = item.tool_action {
+            if !tools.contains(action) {
+                tools.push(action.clone());
             }
+            continue;
+        }
+        let roots = if item.roots.is_empty() {
+            vec![item.path.clone()]
         } else {
-            for file_entry in &item.files {
-                if let Some(ref pb) = pb {
-                    pb.set_message(format::truncate(&format::format_path(&file_entry.path), 40));
-                }
-
-                let result = hard_delete_path(&file_entry.path);
-                manifest.add_item(ManifestItem {
-                    original_path: file_entry.path.clone(),
-                    staged_path: None,
-                    size_bytes: file_entry.size_bytes,
-                    category: format!("{}", item.category),
-                    safety: format!("{:?}", item.safety),
-                    is_dir: file_entry.path.is_dir(),
-                    success: result.is_ok(),
-                    error: result.err().map(|e| e.to_string()),
-                });
-
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
-                }
+            item.roots.clone()
+        };
+        for entry in &item.files {
+            if exclude_paths.iter().any(|x| x == &entry.path) {
+                continue;
             }
+            requests.push(DeleteRequest {
+                path: entry.path.clone(),
+                size_bytes: entry.size_bytes,
+                category: item.category.to_string(),
+                safety: format!("{:?}", item.safety),
+                roots: roots.clone(),
+                policy: item.policy,
+            });
         }
     }
-
-    if let Some(ref pb) = pb {
-        pb.finish_and_clear();
-    }
-
-    // Save manifest to logs (even for hard delete, for audit trail)
-    manifest
-        .save()
-        .context("Failed to save clean manifest log")?;
-
-    Ok(CleanReport {
-        mode: CleanMode::HardDelete,
-        files_removed: manifest.total_files,
-        bytes_freed: manifest.total_bytes,
-        session_id: None,
-        errors: manifest.errors.clone(),
-    })
-}
-
-/// Delete a single file or directory permanently
-fn hard_delete_path(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(()); // Already gone
-    }
-
-    if path.is_dir() {
-        std::fs::remove_dir_all(path)
-            .with_context(|| format!("Failed to remove directory: {}", path.display()))?;
-    } else {
-        std::fs::remove_file(path)
-            .with_context(|| format!("Failed to remove file: {}", path.display()))?;
-    }
-
-    Ok(())
+    (requests, tools, skipped)
 }
 
 /// Check if the staging area is getting too large and warn

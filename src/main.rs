@@ -2,20 +2,30 @@ use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use std::path::PathBuf;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use tidymac::cleaner::{self, CleanManifest, CleanMode};
-use tidymac::cli::args::{Cli, Commands, ConfigAction, OutputFormat};
+use tidymac::cli::args::{Cli, Commands, ConfigAction, OutputFormat, SafetyFilter};
 use tidymac::cli::output;
 use tidymac::common::config::Config;
 use tidymac::common::format;
 use tidymac::profiles::loader::Profile;
 use tidymac::scanner;
+use tidymac::scanner::targets::SafetyLevel;
 
 use tidymac::common::observability;
 
 fn setup_logging(verbose: bool) -> Result<()> {
-    observability::init(verbose, None)
+    observability::init(verbose)
+}
+
+/// Ask a yes/no question on the terminal.
+fn confirm(question: &str) -> Result<bool> {
+    use std::io::Write;
+    print!("\n  {} {} [y/N] ", "❓", question);
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().eq_ignore_ascii_case("y"))
 }
 
 fn main() -> Result<()> {
@@ -40,10 +50,11 @@ fn main() -> Result<()> {
         Commands::Clean {
             hard,
             yes,
-            categories: _,
-            max_safety: _,
+            ref categories,
+            ref max_safety,
             dry_run,
-        } => cmd_clean(&cli, hard, yes, dry_run),
+            force,
+        } => cmd_clean(&cli, hard, yes, categories.clone(), max_safety.clone(), dry_run, force),
 
         Commands::Undo {
             last,
@@ -65,7 +76,14 @@ fn main() -> Result<()> {
             threshold,
             min_size,
             detailed,
-        } => cmd_dup(&cli, path, perceptual, threshold, min_size, detailed),
+            remove,
+            yes,
+        } => cmd_dup(&cli, path, perceptual, threshold, min_size, detailed, remove, yes),
+
+        Commands::Map { ref path, depth, top } => cmd_map(&cli, path.clone(), depth, top),
+        Commands::SystemData => cmd_system_data(&cli),
+        Commands::Schedule { ref action } => cmd_schedule(&cli, action),
+        Commands::Report => cmd_report(&cli),
 
         Commands::Apps { ref action } => cmd_apps(&cli, action),
 
@@ -81,10 +99,10 @@ fn main() -> Result<()> {
             yes,
         } => cmd_docker(&cli, prune, dry_run, yes),
 
-        Commands::Config { action } => cmd_config(action),
+        Commands::Config { ref action } => cmd_config(action),
         Commands::Status { diagnostics } => cmd_status(diagnostics),
 
-        Commands::Completions { shell } => {
+        Commands::Completions { ref shell } => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
             let shell = match shell {
@@ -112,15 +130,17 @@ fn cmd_scan(cli: &Cli, detailed: bool, no_cache: bool) -> Result<()> {
     let scan_targets = profile.enabled_targets();
     let show_progress = !cli.quiet && matches!(cli.format, OutputFormat::Human);
 
-    let results = scanner::run_scan_with_cache(
+    let _ = config;
+    let mut results = scanner::run_scan_with_cache(
         &scan_targets,
         show_progress,
         profile.includes_dev_projects(),
         profile.thresholds.stale_days,
-        config.large_file_threshold_bytes(),
+        profile.large_file_threshold(),
         !no_cache,
         profile_name,
     )?;
+    results.errors.extend(profile.rule_problems());
 
     match cli.format {
         OutputFormat::Human => output::print_scan_results(&results, detailed),
@@ -133,6 +153,7 @@ fn cmd_scan(cli: &Cli, detailed: bool, no_cache: bool) -> Result<()> {
 
 // ─── Dup ──────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_dup(
     cli: &Cli,
     path: &str,
@@ -140,6 +161,8 @@ fn cmd_dup(
     threshold: f64,
     min_size: u64,
     detailed: bool,
+    remove: bool,
+    yes: bool,
 ) -> Result<()> {
     // Expand ~ in path
     let root = if path.starts_with('~') {
@@ -198,21 +221,82 @@ fn cmd_dup(
         }
     }
 
+    if remove && !results.exact_groups.is_empty() {
+        // Exact duplicates only — "similar" images are never removed automatically.
+        let resolved = tidymac::duplicates::resolve_all(
+            &results.exact_groups,
+            &tidymac::duplicates::ResolveStrategy::KeepLargest,
+        );
+        let paths: Vec<PathBuf> = resolved.iter().flat_map(|r| r.remove.clone()).collect();
+        if paths.is_empty() {
+            return Ok(());
+        }
+        if !yes
+            && !confirm(&format!(
+                "Move {} duplicate copies to the undo area (one copy of each file is kept)?",
+                paths.len()
+            ))?
+        {
+            println!("  {} Cancelled", "✗".red());
+            return Ok(());
+        }
+        let requests = paths
+            .into_iter()
+            .map(|p| {
+                let size = std::fs::metadata(&p)
+                    .map(|m| {
+                        use std::os::unix::fs::MetadataExt;
+                        m.blocks() * 512
+                    })
+                    .unwrap_or(0);
+                cleaner::DeleteRequest {
+                    path: p,
+                    size_bytes: size,
+                    category: "Duplicate".into(),
+                    safety: "Caution".into(),
+                    roots: Vec::new(),
+                    policy: tidymac::common::safety::DeletePolicy::UserFile,
+                }
+            })
+            .collect();
+        let mut opts = cleaner::DeleteOptions::new(CleanMode::SoftDelete, "duplicates");
+        opts.show_progress = show_progress;
+        let report = cleaner::execute(requests, Vec::new(), &opts)?;
+        output::print_clean_report(&report);
+    }
+
     Ok(())
 }
 
 // ─── Clean ────────────────────────────────────────────────────────────────────
 
-fn cmd_clean(cli: &Cli, hard: bool, yes: bool, dry_run: bool) -> Result<()> {
+fn safety_allowed(level: &SafetyLevel, max: &SafetyFilter) -> bool {
+    match max {
+        SafetyFilter::Safe => *level == SafetyLevel::Safe,
+        SafetyFilter::Caution => *level != SafetyLevel::Dangerous,
+        SafetyFilter::Dangerous => true,
+    }
+}
+
+fn cmd_clean(
+    cli: &Cli,
+    hard: bool,
+    yes: bool,
+    categories: Option<Vec<String>>,
+    max_safety: SafetyFilter,
+    dry_run: bool,
+    force: bool,
+) -> Result<()> {
     let profile_name = cli.profile.as_deref().unwrap_or("quick");
     let profile = Profile::load(profile_name)?;
-    let config = Config::load()?;
 
     if !cli.quiet {
         output::print_profile_info(&profile);
+        for p in profile.rule_problems() {
+            println!("  {} {}", "⚠".yellow(), p);
+        }
     }
 
-    // Check staging health before soft-delete
     if !hard && !dry_run {
         let health = cleaner::check_staging_health()?;
         if !cli.quiet {
@@ -220,28 +304,66 @@ fn cmd_clean(cli: &Cli, hard: bool, yes: bool, dry_run: bool) -> Result<()> {
         }
     }
 
-    let scan_targets = profile.enabled_targets();
     let show_progress = !cli.quiet && matches!(cli.format, OutputFormat::Human);
 
-    let results = scanner::run_scan(
-        &scan_targets,
+    // Always a fresh scan (never the cache): cleaning needs exact entry lists.
+    let mut results = scanner::run_scan(
+        &profile.enabled_targets(),
         show_progress,
         profile.includes_dev_projects(),
         profile.thresholds.stale_days,
-        config.large_file_threshold_bytes(),
+        None, // large files are review-only; never part of a bulk clean
     )?;
+
+    // Filter by --max-safety and --categories
+    let wanted: Vec<String> = categories
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.to_lowercase())
+        .collect();
+    let mut excluded_by_safety = Vec::new();
+    results.items.retain(|item| {
+        if !wanted.is_empty() {
+            let cat = item.category.to_string().to_lowercase();
+            let name = item.name.to_lowercase();
+            if !wanted.iter().any(|w| cat.contains(w) || name.contains(w)) {
+                return false;
+            }
+        }
+        if !safety_allowed(&item.safety, &max_safety) {
+            excluded_by_safety.push(format!("{} ({})", item.name, format::format_size(item.size_bytes)));
+            return false;
+        }
+        true
+    });
+    results.recalculate();
 
     if results.items.is_empty() {
         println!("  {} Nothing to clean!", "✨");
+        if !excluded_by_safety.is_empty() {
+            println!(
+                "  {} {} item(s) need review: rerun with {}",
+                "💡",
+                excluded_by_safety.len(),
+                "--max-safety caution".cyan()
+            );
+        }
         return Ok(());
     }
 
-    // Show what would be cleaned
     if matches!(cli.format, OutputFormat::Human) {
         output::print_scan_results(&results, false);
+        if !excluded_by_safety.is_empty() {
+            println!(
+                "  {} Not included (review recommended): {}. Use {} to include them.",
+                "ℹ️",
+                excluded_by_safety.join(", "),
+                "--max-safety caution".cyan()
+            );
+            println!();
+        }
     }
 
-    // Determine mode
     let mode = if dry_run {
         CleanMode::DryRun
     } else if hard {
@@ -250,60 +372,58 @@ fn cmd_clean(cli: &Cli, hard: bool, yes: bool, dry_run: bool) -> Result<()> {
         CleanMode::SoftDelete
     };
 
-    if mode == CleanMode::DryRun {
-        let report = cleaner::clean(&results.items, mode, profile_name, false)?;
-        println!(
-            "  {} Dry run — would clean {} files ({}). No files modified.",
-            "ℹ️",
-            report.files_removed,
-            format::format_size(report.bytes_freed)
-        );
-        return Ok(());
-    }
+    let tool_items: Vec<String> = results
+        .items
+        .iter()
+        .filter_map(|i| i.tool_action.as_ref().map(|t| format!("{} ({})", i.name, t.command_line())))
+        .collect();
 
-    // Confirm unless --yes
-    if !yes {
-        let mode_label = if hard {
-            "PERMANENTLY DELETE"
+    if mode != CleanMode::DryRun && !yes {
+        if !tool_items.is_empty() {
+            println!("  {} These run a tool and can't be undone:", "🛠");
+            for t in &tool_items {
+                println!("    {} {}", "•".dimmed(), t);
+            }
+        }
+        let question = if hard {
+            format!(
+                "PERMANENTLY DELETE {} ({})?",
+                format::format_count(results.total_files),
+                format::format_size(results.total_reclaimable)
+            )
         } else {
-            "soft delete"
+            format!(
+                "Move {} ({}) to the undo area?",
+                format::format_count(results.total_files),
+                format::format_size(results.total_reclaimable)
+            )
         };
-        print!(
-            "\n  {} {} {} ({})? [y/N] ",
-            "❓",
-            mode_label,
-            format::format_count(results.total_files),
-            format::format_size(results.total_reclaimable)
-        );
-        use std::io::Write;
-        std::io::stdout().flush()?;
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
+        if !confirm(&question)? {
             println!("  {} Cancelled", "✗".red());
             return Ok(());
         }
     }
 
-    let report = cleaner::clean(&results.items, mode, profile_name, show_progress)?;
+    let report = cleaner::clean_with(
+        &results.items,
+        mode,
+        profile_name,
+        &cleaner::CleanOptions {
+            show_progress,
+            force,
+            exclude_paths: Vec::new(),
+        },
+    )?;
 
     match cli.format {
         OutputFormat::Human => output::print_clean_report(&report),
         OutputFormat::Json => {
-            let json = serde_json::json!({
-                "mode": format!("{}", report.mode),
-                "files_removed": report.files_removed,
-                "bytes_freed": report.bytes_freed,
-                "session_id": report.session_id,
-                "errors": report.errors,
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            println!("{}", serde_json::to_string_pretty(&output::clean_report_value(&report))?);
         }
         OutputFormat::Quiet => {
             println!(
                 "{}  {}  {}",
-                format::format_size(report.bytes_freed),
+                format::format_size(report.bytes_freed + report.bytes_staged),
                 report.files_removed,
                 report.session_id.as_deref().unwrap_or("none")
             );
@@ -374,73 +494,46 @@ fn cmd_privacy(cli: &Cli, action: &tidymac::cli::args::PrivacyAction) -> Result<
             Ok(())
         }
 
-        PrivacyAction::Clean { yes, dry_run } => {
-            // Run audit first to show what would be cleaned
+        PrivacyAction::Clean {
+            yes,
+            dry_run,
+            cookies,
+            app_cookies,
+            hard,
+        } => {
             let report = tidymac::privacy::run_privacy_audit(true, true);
             output::print_privacy_report(&report);
 
-            if *dry_run {
-                println!(
-                    "  {} Dry run — no files modified. {} of privacy data found.",
-                    "ℹ️",
-                    format::format_size(report.total_privacy_data_size)
-                );
-                return Ok(());
-            }
+            let mode = if *dry_run {
+                CleanMode::DryRun
+            } else if *hard {
+                CleanMode::HardDelete
+            } else {
+                CleanMode::SoftDelete
+            };
+            let opts = tidymac::privacy::PrivacyCleanOptions {
+                mode: mode.clone(),
+                caches: true,
+                browser_cookies: *cookies,
+                app_cookies: *app_cookies,
+            };
 
-            if !yes {
-                print!(
-                    "  {} Clean all browser caches and cookie data ({})? [y/N] ",
-                    "❓",
-                    format::format_size(report.total_privacy_data_size)
-                );
-                use std::io::Write;
-                std::io::stdout().flush()?;
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if !input.trim().eq_ignore_ascii_case("y") {
+            if mode != CleanMode::DryRun && !yes {
+                let mut what = vec!["browser caches"];
+                if *cookies {
+                    what.push("browser cookies (signs you out of websites)");
+                }
+                if *app_cookies {
+                    what.push("app cookies (signs you out of apps)");
+                }
+                if !confirm(&format!("Clean {}? Browsing history is not touched.", what.join(", ")))? {
                     println!("  {} Cancelled", "✗".red());
                     return Ok(());
                 }
             }
 
-            // Clean browser caches
-            let mut freed = 0u64;
-            let mut cleaned = 0usize;
-
-            for profile in &report.browser_profiles {
-                if let Some(ref p) = profile.cache_path {
-                    if p.exists() {
-                        if let Ok(()) = std::fs::remove_dir_all(p) {
-                            freed += profile.cache_size;
-                            cleaned += 1;
-                        }
-                    }
-                }
-            }
-
-            // Clean cookie locations
-            for loc in &report.cookie_locations {
-                if loc.path.exists() {
-                    let result = if loc.path.is_dir() {
-                        std::fs::remove_dir_all(&loc.path)
-                    } else {
-                        std::fs::remove_file(&loc.path)
-                    };
-                    if result.is_ok() {
-                        freed += loc.size;
-                        cleaned += 1;
-                    }
-                }
-            }
-
-            println!(
-                "  {} Cleaned {} items, freed {}",
-                "✓".green(),
-                cleaned,
-                format::format_size(freed)
-            );
-            println!();
+            let result = tidymac::privacy::clean_privacy(&report, &opts)?;
+            output::print_clean_report(&result);
             Ok(())
         }
     }
@@ -606,15 +699,14 @@ fn cmd_apps(cli: &Cli, action: &tidymac::cli::args::AppsAction) -> Result<()> {
 
         AppsAction::Info { ref name } => {
             let apps = tidymac::apps::discover_apps();
-            let matches = tidymac::apps::find_app_by_name(&apps, name);
-
-            if matches.is_empty() {
-                println!("  No app found matching '{}'", name);
-                return Ok(());
-            }
-
-            for app in matches {
-                output::print_app_info(app);
+            match tidymac::apps::resolve_app(&apps, name) {
+                tidymac::apps::AppLookup::Found(app) => {
+                    output::print_app_info(app);
+                    output::print_install_info(&tidymac::apps::install_info(&app.path));
+                }
+                tidymac::apps::AppLookup::Ambiguous(list) | tidymac::apps::AppLookup::NotFound(list) => {
+                    print_app_suggestions(name, &list);
+                }
             }
             Ok(())
         }
@@ -623,46 +715,129 @@ fn cmd_apps(cli: &Cli, action: &tidymac::cli::args::AppsAction) -> Result<()> {
             ref name,
             dry_run,
             yes,
+            hard,
+            include_name_matches,
+            keep_bundle,
         } => {
             let apps = tidymac::apps::discover_apps();
-            let matches = tidymac::apps::find_app_by_name(&apps, name);
-
-            if matches.is_empty() {
-                println!("  No app found matching '{}'", name);
-                return Ok(());
-            }
-            if matches.len() > 1 {
-                println!("  Multiple apps match '{}'. Be more specific:", name);
-                for app in &matches {
-                    println!("    {} {}", "•".dimmed(), app.name);
+            let app = match tidymac::apps::resolve_app(&apps, name) {
+                tidymac::apps::AppLookup::Found(a) => a,
+                tidymac::apps::AppLookup::Ambiguous(list) | tidymac::apps::AppLookup::NotFound(list) => {
+                    print_app_suggestions(name, &list);
+                    return Ok(());
                 }
-                return Ok(());
-            }
-
-            let app = matches[0];
+            };
             output::print_app_info(app);
+            let info = tidymac::apps::install_info(&app.path);
+            output::print_install_info(&info);
 
-            if !dry_run && !yes {
-                print!(
-                    "  {} Remove '{}' and all associated files ({})? [y/N] ",
-                    "❓",
+            let mode = if *dry_run {
+                CleanMode::DryRun
+            } else if *hard {
+                CleanMode::HardDelete
+            } else {
+                CleanMode::SoftDelete
+            };
+            if mode != CleanMode::DryRun && !yes {
+                let what = if *keep_bundle { "the data of" } else { "" };
+                let how = if *hard { "permanently delete" } else { "move to the undo area" };
+                if !confirm(&format!(
+                    "Remove {} '{}' ({}) — {}?",
+                    what,
                     app.name,
-                    format::format_size(app.total_size)
-                );
-                use std::io::Write;
-                std::io::stdout().flush()?;
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if !input.trim().eq_ignore_ascii_case("y") {
+                    format::format_size(app.total_size),
+                    how
+                ))? {
                     println!("  {} Cancelled", "✗".red());
                     return Ok(());
                 }
             }
 
-            let report = tidymac::apps::uninstall_app(app, *dry_run)?;
+            let opts = tidymac::apps::UninstallOptions {
+                mode,
+                remove_bundle: !keep_bundle,
+                regenerable_only: false,
+                include_name_matches: *include_name_matches,
+                extra: info.brew_zap.clone(),
+                only_paths: None,
+            };
+            let report = tidymac::apps::uninstall_app_with(app, &opts)?;
             output::print_uninstall_report(&report);
             Ok(())
         }
+
+        AppsAction::Orphans { ref clean, hard, yes } => {
+            let groups = tidymac::apps::find_orphans();
+            if clean.is_empty() {
+                match cli.format {
+                    OutputFormat::Json => {
+                        let json: Vec<_> = groups
+                            .iter()
+                            .map(|g| {
+                                serde_json::json!({
+                                    "bundle_id": g.bundle_id,
+                                    "total_size": g.total_size,
+                                    "files": g.files.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>(),
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&json)?);
+                    }
+                    _ => output::print_orphans(&groups),
+                }
+                return Ok(());
+            }
+
+            let wanted: Vec<String> = clean.iter().map(|c| c.to_lowercase()).collect();
+            let selected: Vec<_> = groups.iter().filter(|g| wanted.contains(&g.bundle_id)).cloned().collect();
+            if selected.is_empty() {
+                println!("  No orphaned leftovers for: {}", clean.join(", "));
+                return Ok(());
+            }
+            output::print_orphans(&selected);
+            if !yes && !confirm("Remove these leftovers?")? {
+                println!("  {} Cancelled", "✗".red());
+                return Ok(());
+            }
+            let library = dirs::home_dir().unwrap_or_default().join("Library");
+            let requests = selected
+                .iter()
+                .flat_map(|g| {
+                    let lib = library.clone();
+                    g.files.iter().map(move |f| cleaner::DeleteRequest {
+                        path: f.path.clone(),
+                        size_bytes: f.size,
+                        category: "Orphan".into(),
+                        safety: "Caution".into(),
+                        roots: vec![lib.clone()],
+                        policy: tidymac::common::safety::DeletePolicy::AppData,
+                    })
+                })
+                .collect();
+            let mode = if *hard { CleanMode::HardDelete } else { CleanMode::SoftDelete };
+            let report = cleaner::execute(requests, Vec::new(), &cleaner::DeleteOptions::new(mode, "orphans"))?;
+            output::print_clean_report(&report);
+            Ok(())
+        }
+    }
+}
+
+fn print_app_suggestions(query: &str, candidates: &[&tidymac::apps::InstalledApp]) {
+    if candidates.is_empty() {
+        println!("  No app found matching '{}'", query);
+        return;
+    }
+    println!(
+        "  '{}' doesn't identify a single app. Use the exact name or bundle id:",
+        query
+    );
+    for a in candidates {
+        println!(
+            "    {} {}  {}",
+            "•".dimmed(),
+            a.name,
+            a.bundle_id.clone().unwrap_or_default().dimmed()
+        );
     }
 }
 
@@ -727,6 +902,13 @@ fn cmd_startup(cli: &Cli, action: &tidymac::cli::args::StartupAction) -> Result<
                 return Ok(());
             }
 
+            if matches.len() > 1 {
+                println!("  Several startup items match '{}'. Use the exact label:", name);
+                for m in &matches {
+                    println!("    {} {}", "•".dimmed(), m.label);
+                }
+                return Ok(());
+            }
             for item in matches {
                 match tidymac::startup::disable_item(item) {
                     Ok(msg) => println!("  {} {}", "✓".green(), msg),
@@ -745,6 +927,13 @@ fn cmd_startup(cli: &Cli, action: &tidymac::cli::args::StartupAction) -> Result<
                 return Ok(());
             }
 
+            if matches.len() > 1 {
+                println!("  Several startup items match '{}'. Use the exact label:", name);
+                for m in &matches {
+                    println!("    {} {}", "•".dimmed(), m.label);
+                }
+                return Ok(());
+            }
             for item in matches {
                 match tidymac::startup::enable_item(item) {
                     Ok(msg) => println!("  {} {}", "✓".green(), msg),
@@ -901,11 +1090,24 @@ fn cmd_purge(
             "✓".green(),
             plist_path.display()
         );
-        println!(
-            "  {} Load with: {}",
-            "💡",
-            format!("launchctl load {}", plist_path.display()).cyan()
-        );
+        let domain = tidymac::common::sys::gui_domain();
+        let _ = std::process::Command::new("/bin/launchctl")
+            .args(["bootout", &format!("{}/com.tidymac.purge", domain)])
+            .output();
+        let loaded = std::process::Command::new("/bin/launchctl")
+            .args(["bootstrap", &domain, &plist_path.display().to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if loaded {
+            println!("  {} Loaded with launchd ({})", "✓".green(), domain);
+        } else {
+            println!(
+                "  {} Load with: {}",
+                "💡",
+                format!("launchctl bootstrap {} {}", domain, plist_path.display()).cyan()
+            );
+        }
         println!("  Expired sessions will be purged daily at 3:00 AM.");
         println!();
         return Ok(());
@@ -1007,7 +1209,7 @@ fn cmd_purge(
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-fn cmd_config(action: ConfigAction) -> Result<()> {
+fn cmd_config(action: &ConfigAction) -> Result<()> {
     match action {
         ConfigAction::Init => {
             Config::init_dirs()?;
@@ -1035,6 +1237,9 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
                 "large_file_threshold_mb" => config.large_file_threshold_mb = value.parse()?,
                 "staging_retention_days" => config.staging_retention_days = value.parse()?,
                 "default_profile" => config.default_profile = value.clone(),
+                "exclude_paths" => {
+                    config.exclude_paths = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                }
                 _ => anyhow::bail!("Unknown config key: {}", key),
             }
             config.save()?;
@@ -1186,5 +1391,126 @@ fn generate_diagnostics() -> Result<()> {
 
     zip.finish()?;
     println!("{} Diagnostics generated successfully.", "✓".green());
+    Ok(())
+}
+
+// ─── Map / System Data ────────────────────────────────────────────────────────
+
+fn cmd_map(cli: &Cli, path: Option<String>, depth: usize, top: usize) -> Result<()> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let root = match path {
+        Some(p) if p == "~" => home,
+        Some(p) => match p.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(p),
+        },
+        None => home,
+    };
+    if !root.is_dir() {
+        anyhow::bail!("Not a folder: {}", root.display());
+    }
+    if !cli.quiet && matches!(cli.format, OutputFormat::Human) {
+        println!();
+        println!("  {} Mapping {} ...", "🗺", format::format_path(&root).cyan());
+        println!();
+    }
+    let tree = tidymac::viz::build_tree(
+        &root,
+        tidymac::viz::TreeOptions {
+            max_depth: depth.clamp(1, 6),
+            max_children: top.max(1),
+        },
+    );
+    match cli.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&tree)?),
+        OutputFormat::Quiet => println!("{}  {}", format::format_size(tree.size), root.display()),
+        OutputFormat::Human => {
+            tidymac::viz::print_tree(&tree, 0, depth);
+            println!();
+        }
+    }
+    Ok(())
+}
+
+fn cmd_system_data(cli: &Cli) -> Result<()> {
+    let report = tidymac::viz::explain_system_data();
+    match cli.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+        _ => {
+            println!();
+            println!("  {} What's in System Data", "🧩");
+            println!("{}", "─".repeat(70).dimmed());
+            for e in &report.entries {
+                let size = e
+                    .size
+                    .map(format::format_size)
+                    .unwrap_or_else(|| "—".to_string());
+                println!("  {:<32} {:>10}", e.name.bold(), size.cyan());
+                println!("    {}", e.description.dimmed());
+                println!("    {} {}", "→".dimmed(), e.advice);
+            }
+            println!();
+            for n in &report.notes {
+                println!("  {} {}", "ℹ️", n);
+            }
+            println!();
+        }
+    }
+    Ok(())
+}
+
+// ─── Schedule / Report ────────────────────────────────────────────────────────
+
+fn cmd_schedule(cli: &Cli, action: &tidymac::cli::args::ScheduleAction) -> Result<()> {
+    use tidymac::cli::args::ScheduleAction;
+    match action {
+        ScheduleAction::Install { every } => {
+            let profile = cli.profile.as_deref().unwrap_or("quick");
+            let status = tidymac::schedule::install(profile, *every, None)?;
+            println!(
+                "  {} Scheduled a {} dry-run report for profile '{}'.",
+                "✓".green(),
+                status.interval,
+                status.profile
+            );
+            println!("    Reports are saved in {}", format::format_path(&tidymac::schedule::reports_dir()));
+            println!("    Nothing is ever deleted by scheduled reports.");
+        }
+        ScheduleAction::Remove => {
+            if tidymac::schedule::remove()? {
+                println!("  {} Scheduled report removed.", "✓".green());
+            } else {
+                println!("  No scheduled report was installed.");
+            }
+        }
+        ScheduleAction::Status => {
+            match tidymac::schedule::status() {
+                Some(s) => println!("  {} {} report for profile '{}'", "⏰", s.interval, s.profile),
+                None => println!("  No scheduled report. Install with {}", "tidymac schedule install --profile developer --every weekly".cyan()),
+            }
+            if let Some(r) = tidymac::schedule::latest_report() {
+                println!(
+                    "  Latest report ({}): {} reclaimable",
+                    r.timestamp.format("%Y-%m-%d %H:%M"),
+                    format::format_size(r.total_reclaimable)
+                );
+                for line in r.items.iter().take(8) {
+                    println!("    {} {:<36} {:>10}", "•".dimmed(), line.name, format::format_size(line.size_bytes));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_report(cli: &Cli) -> Result<()> {
+    let profile = cli.profile.as_deref().unwrap_or("quick");
+    let (path, summary) = tidymac::schedule::write_report(profile)?;
+    println!(
+        "{} report: {} reclaimable — {}",
+        summary.timestamp.to_rfc3339(),
+        format::format_size(summary.total_reclaimable),
+        path.display()
+    );
     Ok(())
 }

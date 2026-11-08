@@ -83,13 +83,17 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         categories: Option<Vec<String>>,
 
-        /// Only clean items above this safety level
+        /// Highest safety level to include: safe (default), caution, dangerous
         #[arg(long, default_value = "safe")]
         max_safety: SafetyFilter,
 
         /// Simulate — show what would be cleaned
         #[arg(long)]
         dry_run: bool,
+
+        /// Allow operations above the 100,000-item safety limit
+        #[arg(long)]
+        force: bool,
     },
 
     /// Find duplicate files
@@ -113,7 +117,41 @@ pub enum Commands {
         /// Show individual files in each group
         #[arg(long)]
         detailed: bool,
+
+        /// Remove exact duplicates (keeps the largest/first copy; soft delete)
+        #[arg(long)]
+        remove: bool,
+
+        /// Skip confirmation when removing
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
+
+    /// Disk map: biggest folders under a path
+    Map {
+        /// Folder to map (default: your home folder)
+        path: Option<String>,
+
+        /// Levels to show
+        #[arg(long, default_value = "2")]
+        depth: usize,
+
+        /// Largest items to show per folder
+        #[arg(long, default_value = "15")]
+        top: usize,
+    },
+
+    /// Explain what's in macOS "System Data"
+    SystemData,
+
+    /// Scheduled dry-run reports (launchd)
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
+
+    /// Run a dry-run scan and save it as a report (used by `schedule`)
+    Report,
 
     /// List and uninstall applications
     Apps {
@@ -231,9 +269,9 @@ pub enum AppsAction {
         unused_days: Option<u32>,
     },
 
-    /// Remove an application and its associated files
+    /// Remove an application and its associated files (soft delete by default)
     Remove {
-        /// Application name
+        /// Exact app name, bundle identifier, or path to the .app
         name: String,
 
         /// Preview what would be removed
@@ -243,13 +281,54 @@ pub enum AppsAction {
         /// Skip confirmation
         #[arg(long, short = 'y')]
         yes: bool,
+
+        /// Delete permanently instead of moving to the undo area
+        #[arg(long)]
+        hard: bool,
+
+        /// Also remove folders matched only by the app's name
+        #[arg(long)]
+        include_name_matches: bool,
+
+        /// Keep the .app, remove only its data
+        #[arg(long)]
+        keep_bundle: bool,
     },
 
     /// Show details about a specific app
     Info {
-        /// Application name
+        /// Exact app name, bundle identifier, or path to the .app
         name: String,
     },
+
+    /// Leftovers of apps that are no longer installed
+    Orphans {
+        /// Bundle identifiers whose leftovers to remove (soft delete)
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        clean: Vec<String>,
+
+        /// Delete permanently instead of moving to the undo area
+        #[arg(long)]
+        hard: bool,
+
+        /// Skip confirmation
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScheduleAction {
+    /// Install (or replace) a scheduled dry-run report for --profile
+    Install {
+        /// How often
+        #[arg(long, value_enum, default_value = "weekly")]
+        every: crate::schedule::Interval,
+    },
+    /// Remove the scheduled report
+    Remove,
+    /// Show the schedule and the latest report
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -293,7 +372,7 @@ pub enum PrivacyAction {
         all: bool,
     },
 
-    /// Clean privacy-sensitive data
+    /// Clean browser caches (and optionally cookies). History is never deleted.
     Clean {
         /// Skip confirmation
         #[arg(long, short = 'y')]
@@ -302,6 +381,18 @@ pub enum PrivacyAction {
         /// Dry run
         #[arg(long)]
         dry_run: bool,
+
+        /// Also delete browser cookie databases (signs you out of websites)
+        #[arg(long)]
+        cookies: bool,
+
+        /// Also delete per-app cookies and HTTP storage (signs you out of apps)
+        #[arg(long)]
+        app_cookies: bool,
+
+        /// Delete permanently instead of moving to the undo area
+        #[arg(long)]
+        hard: bool,
     },
 }
 

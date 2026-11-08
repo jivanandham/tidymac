@@ -6,14 +6,14 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-OUTPUT_DIR="$PROJECT_DIR/TidyMacApp/Libraries"
+OUTPUT_DIR="$PROJECT_DIR/TidyMac/Libraries"
 
 echo "🔨 Building TidyMac Rust library..."
 
 cd "$PROJECT_DIR"
 
 # Build for current architecture (release)
-cargo build --release --lib
+cargo build --release
 
 # Determine architecture
 ARCH=$(uname -m)
@@ -26,8 +26,9 @@ fi
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
-# Copy dylib
+# Copy dylib and give it an @rpath install name
 cp "$DYLIB_PATH" "$OUTPUT_DIR/libtidymac.dylib"
+install_name_tool -id "@rpath/libtidymac.dylib" "$OUTPUT_DIR/libtidymac.dylib"
 
 # Copy header
 cp "$PROJECT_DIR/ffi/tidymac.h" "$OUTPUT_DIR/tidymac.h"

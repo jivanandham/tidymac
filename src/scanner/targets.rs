@@ -5,12 +5,13 @@ use std::time::SystemTime;
 // ─── Core types ───────────────────────────────────────────────────────────────
 
 /// Safety level for a file deletion
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SafetyLevel {
     /// Caches, temp files — always safe to remove
     Safe,
     /// Old logs, downloads — review recommended
+    #[default]
     Caution,
     /// App support files — may break applications
     Dangerous,
@@ -35,6 +36,7 @@ pub enum DevTool {
     Cargo,
     CargoTarget,
     Npm,
+    Sbt,
     Yarn,
     YarnBerry,
     Pnpm,
@@ -62,6 +64,7 @@ impl std::fmt::Display for DevTool {
             DevTool::Cargo => write!(f, "Cargo"),
             DevTool::CargoTarget => write!(f, "Cargo target/ dirs"),
             DevTool::Npm => write!(f, "npm"),
+            DevTool::Sbt => write!(f, "sbt"),
             DevTool::Yarn => write!(f, "Yarn Classic"),
             DevTool::YarnBerry => write!(f, "Yarn Berry"),
             DevTool::Pnpm => write!(f, "pnpm"),
@@ -74,10 +77,11 @@ impl std::fmt::Display for DevTool {
 }
 
 /// File category classification
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     SystemCache,
+    #[default]
     UserCache,
     Logs,
     TempFiles,
@@ -116,8 +120,37 @@ impl std::fmt::Display for Category {
     }
 }
 
+/// A command-line tool that performs a cleanup safely on our behalf.
+///
+/// Some data must be removed through its owning tool so the tool's own
+/// bookkeeping stays consistent (simulator device sets, Docker's VM disk,
+/// Go's read-only module cache). These actions can't be staged for undo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAction {
+    /// `docker container/image/volume/builder prune -f`
+    DockerPrune,
+    /// `xcrun simctl delete unavailable`
+    SimctlDeleteUnavailable,
+    /// `xcrun simctl --set previews delete all`
+    SimctlDeletePreviews,
+    /// `go clean -modcache`
+    GoCleanModcache,
+}
+
+impl ToolAction {
+    pub fn command_line(&self) -> &'static str {
+        match self {
+            ToolAction::DockerPrune => "docker container/image/volume/builder prune -f",
+            ToolAction::SimctlDeleteUnavailable => "xcrun simctl delete unavailable",
+            ToolAction::SimctlDeletePreviews => "xcrun simctl --set previews delete all",
+            ToolAction::GoCleanModcache => "go clean -modcache",
+        }
+    }
+}
+
 /// A single scan result entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScanItem {
     /// Display name for this item group
     pub name: String,
@@ -140,9 +173,42 @@ pub struct ScanItem {
     /// Human-readable reason this is flagged
     pub reason: String,
 
-    /// Individual file paths (for detailed view)
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// Entries that would be removed. Each entry is a direct child of one of
+    /// `roots` (a cache folder, a trashed item, a log file…) — never a root itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileEntry>,
+
+    /// The scanned locations. Every entry must lie strictly inside one of them.
+    #[serde(default)]
+    pub roots: Vec<PathBuf>,
+
+    /// Bytes deleting the entries would actually free (APFS clones counted once).
+    #[serde(default)]
+    pub reclaimable_bytes: u64,
+
+    /// If set, cleaning runs this tool instead of deleting files.
+    #[serde(default)]
+    pub tool_action: Option<ToolAction>,
+
+    /// Shown for review but never removed by a bulk clean (e.g. large files).
+    #[serde(default)]
+    pub review_only: bool,
+
+    /// Deletion policy the safety guard applies to this item's entries.
+    #[serde(default)]
+    pub policy: crate::common::safety::DeletePolicy,
+
+    /// Items rebuilt from the scan cache have no entry list and can't be cleaned
+    /// until a fresh scan.
+    #[serde(default)]
+    pub from_cache: bool,
+}
+
+impl ScanItem {
+    /// Is there anything this item could actually clean?
+    pub fn is_cleanable(&self) -> bool {
+        !self.review_only && !self.from_cache && (self.tool_action.is_some() || !self.files.is_empty())
+    }
 }
 
 /// Individual file entry within a scan item
@@ -183,10 +249,21 @@ impl ScanResults {
         }
     }
 
-    /// Recalculate totals from items
+    /// Recalculate totals from items. Review-only items (large files) are
+    /// listed but not counted as reclaimable.
     pub fn recalculate(&mut self) {
-        self.total_reclaimable = self.items.iter().map(|i| i.size_bytes).sum();
-        self.total_files = self.items.iter().map(|i| i.file_count).sum();
+        self.total_reclaimable = self
+            .items
+            .iter()
+            .filter(|i| !i.review_only)
+            .map(|i| i.size_bytes)
+            .sum();
+        self.total_files = self
+            .items
+            .iter()
+            .filter(|i| !i.review_only)
+            .map(|i| i.file_count)
+            .sum();
     }
 
     /// Filter items by safety level
@@ -208,326 +285,352 @@ impl ScanResults {
 
 // ─── Scan target definitions ──────────────────────────────────────────────────
 
-/// A scan target defines where to look and how to classify what's found
-#[derive(Debug, Clone)]
+/// A scan target defines where to look and how to classify what's found.
+///
+/// The scanner lists the **direct children** of each path and reports each
+/// child (file or folder) as one cleanable entry, with its total size and the
+/// newest modification time found inside it. Roots themselves are never removed.
+#[derive(Debug, Clone, Default)]
 pub struct ScanTarget {
     pub name: String,
     pub category: Category,
-    pub paths: Vec<String>, // paths with ~ expansion
+    /// Paths with `~` expansion, globs, and `{uid}` substitution.
+    pub paths: Vec<String>,
     pub safety: SafetyLevel,
     pub reason: String,
+    /// `false` → only direct child *files* are considered (no folders).
     pub recursive: bool,
-    pub min_age_days: Option<u32>, // only flag if older than N days
+    /// Only flag entries whose newest content is older than N days.
+    pub min_age_days: Option<u32>,
+    /// Only flag entries at least this large.
+    pub min_size_bytes: Option<u64>,
+    /// Child names to skip (case-insensitive exact match, `prefix*` allowed).
+    pub exclude: Vec<String>,
+    /// If non-empty, only files with these extensions (lower-case, no dot).
+    pub extensions: Vec<String>,
+    /// Run a tool instead of deleting files.
+    pub tool_action: Option<ToolAction>,
+    /// Deletion policy for this target's entries.
+    pub policy: crate::common::safety::DeletePolicy,
 }
 
-/// Get all system junk scan targets
+impl ScanTarget {
+    fn simple(
+        name: &str,
+        category: Category,
+        paths: &[&str],
+        safety: SafetyLevel,
+        reason: &str,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            category,
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            safety,
+            reason: reason.into(),
+            recursive: true,
+            ..Default::default()
+        }
+    }
+
+    fn min_age(mut self, days: u32) -> Self {
+        self.min_age_days = Some(days);
+        self
+    }
+
+    fn exclude(mut self, names: &[&str]) -> Self {
+        self.exclude = names.iter().map(|n| n.to_string()).collect();
+        self
+    }
+
+    fn tool(mut self, action: ToolAction) -> Self {
+        self.tool_action = Some(action);
+        self
+    }
+}
+
+/// Cache folders that are either in active use by macOS services or are
+/// expensive to rebuild. We never offer to clear these.
+const USER_CACHE_EXCLUDES: &[&str] = &[
+    "com.apple.bird",
+    "com.apple.nsurlsessiond",
+    "com.apple.containermanagerd",
+    "com.apple.ap.adprivacyd",
+    "com.apple.homed",
+    "com.apple.HomeKit",
+    "CloudKit",
+    "FamilyCircle",
+    "com.apple.amsengagementd",
+    "com.apple.akd",
+    "com.apple.Safari.SafeBrowsing",
+    "com.apple.iCloudHelper",
+    "TidyMac",
+];
+
+/// Get system junk scan targets
 pub fn system_junk_targets() -> Vec<ScanTarget> {
     vec![
+        ScanTarget::simple(
+            "User Cache Files",
+            Category::UserCache,
+            &["~/Library/Caches"],
+            SafetyLevel::Safe,
+            "App caches — rebuilt automatically when the app needs them",
+        )
+        .exclude(USER_CACHE_EXCLUDES),
+        ScanTarget::simple(
+            "User Log Files",
+            Category::Logs,
+            &["~/Library/Logs"],
+            SafetyLevel::Safe,
+            "Application logs older than 7 days",
+        )
+        .min_age(7)
+        .exclude(&["DiagnosticReports", "TidyMac"]),
+        ScanTarget::simple(
+            "Temporary Files",
+            Category::TempFiles,
+            &["{user_tmp}"],
+            SafetyLevel::Caution,
+            "Your temporary folder ($TMPDIR) — only items untouched for 3+ days",
+        )
+        .min_age(3)
+        .exclude(&["TemporaryItems", "com.apple.*", "Cleanup At Startup"]),
+        ScanTarget::simple(
+            "Crash Reports",
+            Category::CrashReports,
+            &["~/Library/Logs/DiagnosticReports"],
+            SafetyLevel::Safe,
+            "Crash and diagnostic reports",
+        ),
+        ScanTarget::simple(
+            "QuickLook Thumbnails",
+            Category::SystemCache,
+            &["~/Library/Caches/com.apple.QuickLook.thumbnailcache"],
+            SafetyLevel::Safe,
+            "Thumbnail previews — regenerated on demand",
+        ),
         ScanTarget {
-            name: "User Cache Files".into(),
-            category: Category::UserCache,
-            paths: vec!["~/Library/Caches".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Application caches that will be regenerated automatically".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "System Log Files".into(),
-            category: Category::Logs,
-            paths: vec!["/var/log".into()],
-            safety: SafetyLevel::Caution,
-            reason: "System logs — old entries are safe to remove".into(),
-            recursive: true,
-            min_age_days: Some(7),
-        },
-        ScanTarget {
-            name: "User Log Files".into(),
-            category: Category::Logs,
-            paths: vec!["~/Library/Logs".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Application logs that can be safely removed".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Temporary Files".into(),
-            category: Category::TempFiles,
-            paths: vec!["/tmp".into(), "/var/folders".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Temporary files created by the system and apps".into(),
-            recursive: true,
-            min_age_days: Some(1),
-        },
-        ScanTarget {
-            name: "Crash Reports".into(),
-            category: Category::CrashReports,
-            paths: vec!["~/Library/Logs/DiagnosticReports".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Application crash reports — safe to remove unless debugging".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "QuickLook Thumbnails".into(),
-            category: Category::SystemCache,
-            paths: vec!["~/Library/Caches/com.apple.QuickLook.thumbnailcache".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Thumbnail preview caches — regenerated on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Downloaded DMG Files".into(),
+            name: "Downloaded Installers".into(),
             category: Category::DownloadedDmg,
             paths: vec!["~/Downloads".into()],
             safety: SafetyLevel::Caution,
-            reason: "Installer disk images — usually safe to remove after installation".into(),
+            reason: "Disk images and installer packages older than 7 days".into(),
             recursive: false,
             min_age_days: Some(7),
+            extensions: vec!["dmg".into(), "pkg".into(), "mpkg".into(), "iso".into()],
+            ..Default::default()
         },
     ]
 }
 
-/// Get all developer tool scan targets
+/// Get developer tool cache targets
 pub fn developer_targets() -> Vec<ScanTarget> {
     vec![
-        ScanTarget {
-            name: "Xcode DerivedData".into(),
-            category: Category::DevCache(DevTool::Xcode),
-            paths: vec!["~/Library/Developer/Xcode/DerivedData".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Build artifacts that Xcode regenerates on next build".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Xcode Archives".into(),
-            category: Category::DevCache(DevTool::XcodeArchives),
-            paths: vec!["~/Library/Developer/Xcode/Archives".into()],
-            safety: SafetyLevel::Caution,
-            reason: "App Store submission archives — keep if you need to debug shipped versions"
-                .into(),
-            recursive: true,
-            min_age_days: Some(90),
-        },
-        ScanTarget {
-            name: "iOS Simulators".into(),
-            category: Category::DevCache(DevTool::XcodeSimulators),
-            paths: vec!["~/Library/Developer/CoreSimulator/Devices".into()],
-            safety: SafetyLevel::Caution,
-            reason: "iOS simulator data — can be re-downloaded".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Docker Data".into(),
-            category: Category::DevCache(DevTool::Docker),
-            paths: vec![
-                "~/Library/Containers/com.docker.docker/Data".into(),
-                "~/.docker".into(),
+        ScanTarget::simple(
+            "Xcode DerivedData",
+            Category::DevCache(DevTool::Xcode),
+            &["~/Library/Developer/Xcode/DerivedData"],
+            SafetyLevel::Safe,
+            "Build products and indexes — rebuilt on next build",
+        ),
+        ScanTarget::simple(
+            "Xcode Archives",
+            Category::DevCache(DevTool::XcodeArchives),
+            &["~/Library/Developer/Xcode/Archives"],
+            SafetyLevel::Caution,
+            "App archives older than 90 days — needed to symbolicate old releases",
+        )
+        .min_age(90),
+        ScanTarget::simple(
+            "Xcode Device Support",
+            Category::DevCache(DevTool::Xcode),
+            &[
+                "~/Library/Developer/Xcode/iOS DeviceSupport",
+                "~/Library/Developer/Xcode/watchOS DeviceSupport",
+                "~/Library/Developer/Xcode/tvOS DeviceSupport",
             ],
-            safety: SafetyLevel::Caution,
-            reason: "Docker images and volumes — use 'docker system prune' for granular control"
-                .into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Homebrew Cache".into(),
-            category: Category::DevCache(DevTool::Homebrew),
-            paths: vec!["~/Library/Caches/Homebrew".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Downloaded package archives — re-downloaded on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "pip Cache".into(),
-            category: Category::DevCache(DevTool::Pip),
-            paths: vec!["~/Library/Caches/pip".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Python package download cache — re-downloaded on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "npm Cache".into(),
-            category: Category::DevCache(DevTool::Npm),
-            paths: vec!["~/.npm/_cacache".into()],
-            safety: SafetyLevel::Safe,
-            reason: "npm package cache — re-downloaded on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Yarn Cache".into(),
-            category: Category::DevCache(DevTool::Yarn),
-            paths: vec!["~/Library/Caches/Yarn".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Yarn package cache — re-downloaded on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "CocoaPods Cache".into(),
-            category: Category::DevCache(DevTool::CocoaPods),
-            paths: vec!["~/Library/Caches/CocoaPods".into()],
-            safety: SafetyLevel::Safe,
-            reason: "CocoaPods spec and download cache".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Cargo Registry Cache".into(),
-            category: Category::DevCache(DevTool::Cargo),
-            paths: vec![
-                "~/.cargo/registry/cache".into(),
-                "~/.cargo/registry/src".into(),
-            ],
-            safety: SafetyLevel::Safe,
-            reason: "Rust crate download cache — re-downloaded on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Gradle Cache".into(),
-            category: Category::DevCache(DevTool::Gradle),
-            paths: vec!["~/.gradle/caches".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Gradle build cache and dependency downloads".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Maven Local Repository".into(),
-            category: Category::DevCache(DevTool::Maven),
-            paths: vec!["~/.m2/repository".into()],
-            safety: SafetyLevel::Caution,
-            reason: "Maven dependency cache — may include locally installed artifacts".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Conda Package Cache".into(),
-            category: Category::DevCache(DevTool::Conda),
-            paths: vec!["~/.conda/pkgs".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Conda downloaded packages — re-downloaded on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        // ── New: pnpm store ───────────────────────────────────────────────────
-        ScanTarget {
-            name: "pnpm Store".into(),
-            category: Category::DevCache(DevTool::Pnpm),
-            paths: vec![
-                "~/.local/share/pnpm/store".into(),
-                "~/Library/pnpm/store".into(),
-            ],
-            safety: SafetyLevel::Safe,
-            reason: "pnpm content-addressable package store — re-installed on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        // ── New: Yarn Berry (v2+) cache ───────────────────────────────────────
-        ScanTarget {
-            name: "Yarn Berry Cache".into(),
-            category: Category::DevCache(DevTool::YarnBerry),
-            paths: vec!["~/.yarn/cache".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Yarn v2+ (Berry) global package cache — re-downloaded on demand".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        // ── New: Go module cache ──────────────────────────────────────────────
-        ScanTarget {
-            name: "Go Module Cache".into(),
-            category: Category::DevCache(DevTool::Go),
-            paths: vec!["~/go/pkg/mod".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Go module download cache — re-downloaded with `go get`".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        // ── New: Ruby Gems ────────────────────────────────────────────────────
-        ScanTarget {
-            name: "Ruby Gems Cache".into(),
-            category: Category::DevCache(DevTool::RubyGems),
-            paths: vec!["~/.gem/ruby".into(), "~/Library/Ruby/Gems".into()],
-            safety: SafetyLevel::Caution,
-            reason: "Ruby gem installations — reinstall with `gem install`".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        // ── New: Terraform plugin cache ───────────────────────────────────────
-        ScanTarget {
-            name: "Terraform Plugin Cache".into(),
-            category: Category::DevCache(DevTool::Terraform),
-            paths: vec!["~/.terraform.d/plugins".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Terraform provider plugins — re-downloaded with `terraform init`".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        // ── New: JVM / Ivy2 cache ─────────────────────────────────────────────
-        ScanTarget {
-            name: "JVM / Ivy2 Cache".into(),
-            category: Category::DevCache(DevTool::Ivy2),
-            paths: vec!["~/.ivy2/cache".into(), "~/.sbt".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Ivy/SBT dependency download cache — re-downloaded on next build".into(),
-            recursive: true,
-            min_age_days: None,
-        },
+            SafetyLevel::Safe,
+            "Debug symbols for device OS versions not used in 90 days — re-copied when a device connects",
+        )
+        .min_age(90),
+        ScanTarget::simple(
+            "Unavailable Simulators",
+            Category::DevCache(DevTool::XcodeSimulators),
+            &["~/Library/Developer/CoreSimulator/Devices"],
+            SafetyLevel::Safe,
+            "Simulators for runtimes no longer installed (removed with simctl)",
+        )
+        .tool(ToolAction::SimctlDeleteUnavailable),
+        ScanTarget::simple(
+            "SwiftUI Preview Simulators",
+            Category::DevCache(DevTool::XcodeSimulators),
+            &["~/Library/Developer/Xcode/UserData/Previews/Simulator Devices"],
+            SafetyLevel::Safe,
+            "Preview devices — recreated when you open a preview (removed with simctl)",
+        )
+        .tool(ToolAction::SimctlDeletePreviews),
+        ScanTarget::simple(
+            "Docker (dangling data)",
+            Category::DevCache(DevTool::Docker),
+            &[],
+            SafetyLevel::Caution,
+            "Stopped containers, dangling images, unused anonymous volumes and build cache (via docker prune)",
+        )
+        .tool(ToolAction::DockerPrune),
+        ScanTarget::simple(
+            "Homebrew Cache",
+            Category::DevCache(DevTool::Homebrew),
+            &["~/Library/Caches/Homebrew"],
+            SafetyLevel::Safe,
+            "Downloaded bottles and source archives",
+        ),
+        ScanTarget::simple(
+            "pip Cache",
+            Category::DevCache(DevTool::Pip),
+            &["~/Library/Caches/pip"],
+            SafetyLevel::Safe,
+            "Python package download cache",
+        ),
+        ScanTarget::simple(
+            "npm Cache",
+            Category::DevCache(DevTool::Npm),
+            &["~/.npm/_cacache"],
+            SafetyLevel::Safe,
+            "npm package cache — re-downloaded on install",
+        ),
+        ScanTarget::simple(
+            "Yarn Cache",
+            Category::DevCache(DevTool::Yarn),
+            &["~/Library/Caches/Yarn"],
+            SafetyLevel::Safe,
+            "Yarn Classic package cache",
+        ),
+        ScanTarget::simple(
+            "CocoaPods Cache",
+            Category::DevCache(DevTool::CocoaPods),
+            &["~/Library/Caches/CocoaPods"],
+            SafetyLevel::Safe,
+            "CocoaPods spec and pod cache",
+        ),
+        ScanTarget::simple(
+            "Cargo Registry Cache",
+            Category::DevCache(DevTool::Cargo),
+            &["~/.cargo/registry/cache", "~/.cargo/registry/src"],
+            SafetyLevel::Safe,
+            "Downloaded and extracted crates — re-fetched on build",
+        ),
+        ScanTarget::simple(
+            "Gradle Cache",
+            Category::DevCache(DevTool::Gradle),
+            &["~/.gradle/caches"],
+            SafetyLevel::Safe,
+            "Gradle dependency and build cache",
+        ),
+        ScanTarget::simple(
+            "Maven Local Repository",
+            Category::DevCache(DevTool::Maven),
+            &["~/.m2/repository"],
+            SafetyLevel::Caution,
+            "Maven artifacts — may include locally installed snapshots",
+        ),
+        ScanTarget::simple(
+            "Conda Package Cache",
+            Category::DevCache(DevTool::Conda),
+            &["~/.conda/pkgs"],
+            SafetyLevel::Safe,
+            "Conda package tarballs",
+        ),
+        ScanTarget::simple(
+            "pnpm Store",
+            Category::DevCache(DevTool::Pnpm),
+            &["~/Library/pnpm/store", "~/.local/share/pnpm/store"],
+            SafetyLevel::Safe,
+            "pnpm content-addressable store",
+        ),
+        ScanTarget::simple(
+            "Yarn Berry Cache",
+            Category::DevCache(DevTool::YarnBerry),
+            &["~/.yarn/berry/cache"],
+            SafetyLevel::Safe,
+            "Yarn 2+ global cache",
+        ),
+        ScanTarget::simple(
+            "Go Module Cache",
+            Category::DevCache(DevTool::Go),
+            &["~/go/pkg/mod"],
+            SafetyLevel::Safe,
+            "Go module cache (read-only files; removed with go clean -modcache)",
+        )
+        .tool(ToolAction::GoCleanModcache),
+        ScanTarget::simple(
+            "Ruby Gems Cache",
+            Category::DevCache(DevTool::RubyGems),
+            &["~/.gem/ruby/*/cache", "~/.local/share/gem/ruby/*/cache"],
+            SafetyLevel::Safe,
+            "Downloaded .gem files (installed gems are kept)",
+        ),
+        ScanTarget::simple(
+            "Terraform Plugin Cache",
+            Category::DevCache(DevTool::Terraform),
+            &["~/.terraform.d/plugin-cache"],
+            SafetyLevel::Safe,
+            "Cached provider plugins",
+        ),
+        ScanTarget::simple(
+            "Ivy / Coursier Cache",
+            Category::DevCache(DevTool::Ivy2),
+            &["~/.ivy2/cache", "~/Library/Caches/Coursier"],
+            SafetyLevel::Safe,
+            "JVM dependency caches",
+        ),
+        ScanTarget::simple(
+            "sbt Boot Cache",
+            Category::DevCache(DevTool::Sbt),
+            &["~/.sbt/boot"],
+            SafetyLevel::Safe,
+            "sbt launcher cache (your ~/.sbt settings and plugins are kept)",
+        ),
     ]
 }
 
 /// Get trash scan targets
 pub fn trash_targets() -> Vec<ScanTarget> {
     vec![
-        ScanTarget {
-            name: "User Trash".into(),
-            category: Category::Trash,
-            paths: vec!["~/.Trash".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Files in your trash bin".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "External Drive Trash".into(),
-            category: Category::Trash,
-            paths: vec!["/Volumes/*/.Trashes".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Trash from external drives".into(),
-            recursive: true,
-            min_age_days: None,
-        },
+        ScanTarget::simple(
+            "User Trash",
+            Category::Trash,
+            &["~/.Trash"],
+            SafetyLevel::Safe,
+            "Items in your Trash",
+        ),
+        ScanTarget::simple(
+            "External Drive Trash",
+            Category::Trash,
+            &["/Volumes/*/.Trashes/{uid}"],
+            SafetyLevel::Safe,
+            "Your trashed items on external drives (permanent delete only)",
+        ),
     ]
 }
 
 /// Get mail attachment targets
 pub fn mail_targets() -> Vec<ScanTarget> {
     vec![
-        ScanTarget {
-            name: "Mail Downloads".into(),
-            category: Category::MailAttachment,
-            paths: vec!["~/Library/Mail Downloads".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Cached mail attachments — re-downloaded from mail server".into(),
-            recursive: true,
-            min_age_days: None,
-        },
-        ScanTarget {
-            name: "Mail Container Data".into(),
-            category: Category::MailAttachment,
-            paths: vec!["~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads".into()],
-            safety: SafetyLevel::Safe,
-            reason: "Sandboxed mail attachment cache".into(),
-            recursive: true,
-            min_age_days: None,
-        },
+        ScanTarget::simple(
+            "Mail Downloads",
+            Category::MailAttachment,
+            &["~/Library/Mail Downloads"],
+            SafetyLevel::Safe,
+            "Opened mail attachments — re-downloaded from the mail server",
+        ),
+        ScanTarget::simple(
+            "Mail Container Data",
+            Category::MailAttachment,
+            &["~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"],
+            SafetyLevel::Safe,
+            "Sandboxed mail attachment cache",
+        ),
     ]
 }
 

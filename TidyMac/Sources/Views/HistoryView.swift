@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HistoryView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var showPurgeConfirm = false
     @State private var showUndoConfirm = false
     @State private var selectedSession: UndoSession?
 
@@ -17,6 +18,14 @@ struct HistoryView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Menu {
+                    Button("Free space from expired sessions") { viewModel.purgeStaging(all: false) }
+                    Button("Empty the whole undo area…") { showPurgeConfirm = true }
+                } label: {
+                    Label("Free Space", systemImage: "externaldrive.badge.minus")
+                }
+                .fixedSize()
+                .help("Items you cleaned with soft delete stay on disk until their session expires or you empty the undo area.")
                 Button {
                     viewModel.loadHistory()
                 } label: {
@@ -73,6 +82,12 @@ struct HistoryView: View {
             if let session = selectedSession {
                 Text("Restore \(session.totalFiles) files (\(session.totalBytesFormatted)) from session \(session.sessionId)?")
             }
+        }
+        .alert("Empty the undo area?", isPresented: $showPurgeConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete Permanently", role: .destructive) { viewModel.purgeStaging(all: true) }
+        } message: {
+            Text("All soft-deleted items are deleted permanently and their space is freed. This can't be undone.")
         }
         .alert("Undo Complete", isPresented: $viewModel.showUndoResult) {
             Button("OK", role: .cancel) {}

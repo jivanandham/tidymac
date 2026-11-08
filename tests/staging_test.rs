@@ -31,6 +31,7 @@ fn create_test_scan_item(dir: &std::path::Path, name: &str, file_count: usize) -
         safety: SafetyLevel::Safe,
         reason: "Test item".to_string(),
         files,
+        ..Default::default()
     }
 }
 
@@ -220,4 +221,56 @@ fn test_manifest_serialization_roundtrip() {
     assert_eq!(loaded.items.len(), 1);
     assert_eq!(loaded.errors.len(), 1);
     assert!(!loaded.restored);
+}
+
+#[test]
+fn test_session_ids_are_unique_within_a_second() {
+    let a = CleanManifest::new("quick", "soft_delete", 7);
+    let b = CleanManifest::new("quick", "soft_delete", 7);
+    assert_ne!(a.session_id, b.session_id);
+}
+
+#[test]
+fn test_cached_and_review_only_items_are_never_cleaned() {
+    let dir = TempDir::new().unwrap();
+    let mut cached = create_test_scan_item(dir.path(), "cached", 1);
+    cached.from_cache = true;
+    let mut review = create_test_scan_item(dir.path(), "review", 1);
+    review.review_only = true;
+    let (requests, tools, skipped) = tidymac::cleaner::engine::requests_for(&[cached, review], &[]);
+    assert!(requests.is_empty());
+    assert!(tools.is_empty());
+    assert_eq!(skipped.len(), 2);
+}
+
+#[test]
+fn test_requests_use_entries_never_the_root() {
+    let dir = TempDir::new().unwrap();
+    let item = create_test_scan_item(dir.path(), "cache", 3);
+    let (requests, _, _) = tidymac::cleaner::engine::requests_for(&[item], &[]);
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|r| r.path != dir.path()));
+    assert!(requests.iter().all(|r| r.roots == vec![dir.path().to_path_buf()]));
+}
+
+#[test]
+fn test_manifest_recovers_items_from_journal() {
+    let mut manifest = CleanManifest::new("test", "soft_delete", 7);
+    manifest.complete = false;
+    let item = ManifestItem {
+        original_path: std::path::PathBuf::from("/tmp/tidymac-journal-test"),
+        staged_path: Some(std::path::PathBuf::from("/tmp/staged/000001")),
+        size_bytes: 10,
+        category: "Test".into(),
+        safety: "Safe".into(),
+        is_dir: false,
+        success: true,
+        error: None,
+    };
+    manifest.journal_append(&item).unwrap();
+    let mut loaded = manifest.clone();
+    loaded.recover_from_journal();
+    assert_eq!(loaded.items.len(), 1);
+    assert_eq!(loaded.total_bytes, 10);
+    let _ = std::fs::remove_dir_all(manifest.staging_session_dir());
 }

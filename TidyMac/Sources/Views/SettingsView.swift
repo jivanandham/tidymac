@@ -8,7 +8,7 @@ struct SettingsView: View {
     @AppStorage("largeFileThresholdMB") private var largeFileThresholdMB: Double = 100
     @AppStorage("accentColor") private var accentColor = "emerald"
 
-    @StateObject private var appViewModel = AppViewModel()
+    @ObservedObject var appViewModel: AppViewModel
 
     var body: some View {
         TabView {
@@ -31,12 +31,17 @@ struct SettingsView: View {
                 Label("Scanning", systemImage: "magnifyingglass")
             }
 
+            ScheduleSettingsTab(viewModel: appViewModel)
+            .tabItem {
+                Label("Schedule", systemImage: "clock")
+            }
+
             AboutTab()
             .tabItem {
                 Label("About", systemImage: "info.circle")
             }
         }
-        .frame(width: 480, height: 360)
+        .frame(width: 520, height: 420)
     }
 }
 
@@ -49,33 +54,26 @@ struct GeneralSettingsTab: View {
 
     var body: some View {
         Form {
-            Section("App Sandbox Permissions") {
+            Section("Full Disk Access") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("TidyMac runs in a secure sandbox. You must explicitly grant access to folders you want to scan and clean.")
+                    Text("TidyMac isn't sandboxed. To see caches and app data that macOS protects (Mail, Safari, app containers), add TidyMac under System Settings › Privacy & Security › Full Disk Access.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
                     if appViewModel.hasFullDiskAccess {
-                        HStack {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundColor(.green)
-                            Text("Access granted to \(appViewModel.selectedFolders.count) folder(s)")
-                        }
+                        Label("Full Disk Access granted", systemImage: "checkmark.seal.fill")
+                            .foregroundColor(.green)
                     } else {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                            Text("No folders authorized")
-                        }
+                        Label("Full Disk Access not granted", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
                     }
-                    
-                    Button("Manage Folder Access...") {
-                        appViewModel.requestFolderAccess()
+                    HStack {
+                        Button("Open Privacy Settings…") { appViewModel.openFullDiskAccessSettings() }
+                        Button("Check Again") { appViewModel.checkFullDiskAccess() }
                     }
                 }
                 .padding(.vertical, 4)
             }
-            
+
             Section("Appearance") {
                 Picker("Accent Color", selection: $accentColor) {
                     Label("Emerald", systemImage: "circle.fill").tint(.green).tag("emerald")
@@ -210,5 +208,61 @@ struct AboutTab: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+struct ScheduleSettingsTab: View {
+    @ObservedObject var viewModel: AppViewModel
+    @State private var profile = "developer"
+    @State private var interval = "weekly"
+    @AppStorage("showMenuBarExtra") private var showMenuBarExtra = true
+
+    var body: some View {
+        Form {
+            Section("Scheduled dry-run report") {
+                Text("TidyMac can scan on a schedule and record what could be cleaned. Scheduled reports never delete anything.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker("Profile", selection: $profile) {
+                    Text("Quick Sweep").tag("quick")
+                    Text("Developer").tag("developer")
+                    Text("Creative").tag("creative")
+                    Text("Deep Clean").tag("deep")
+                }
+                Picker("Every", selection: $interval) {
+                    Text("Day").tag("daily")
+                    Text("Week").tag("weekly")
+                    Text("Month").tag("monthly")
+                }
+                .pickerStyle(.segmented)
+                HStack {
+                    Button(viewModel.schedule?.installed == true ? "Update Schedule" : "Turn On") {
+                        viewModel.installSchedule(profile: profile, interval: interval)
+                    }
+                    if viewModel.schedule?.installed == true {
+                        Button("Turn Off") { viewModel.removeSchedule() }
+                    }
+                }
+                if let info = viewModel.schedule, info.installed {
+                    Label("Runs \(info.interval ?? "") with the \(info.profile ?? "") profile", systemImage: "clock")
+                        .font(.caption)
+                }
+                if let error = viewModel.scheduleError {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                }
+                if let report = viewModel.schedule?.latestReport {
+                    Text("Latest report: \(ByteCountFormatter.string(fromByteCount: Int64(report.totalReclaimable), countStyle: .file)) reclaimable")
+                        .font(.caption)
+                }
+            }
+            Section("Menu bar") {
+                Toggle("Show TidyMac in the menu bar", isOn: $showMenuBarExtra)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            viewModel.loadSchedule()
+            if let p = viewModel.schedule?.profile { profile = p }
+            if let i = viewModel.schedule?.interval { interval = i }
+        }
     }
 }

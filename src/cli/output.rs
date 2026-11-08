@@ -132,12 +132,30 @@ fn print_scan_item(item: &ScanItem, detailed: bool) {
         _ => "📄",
     };
 
+    let marker = if item.review_only {
+        " [review only]".dimmed().to_string()
+    } else if item.from_cache {
+        " [cached — rescan to clean]".dimmed().to_string()
+    } else if item.tool_action.is_some() {
+        " [via tool, not undoable]".dimmed().to_string()
+    } else {
+        String::new()
+    };
+    let shared = if item.reclaimable_bytes + 1024 * 1024 < item.size_bytes {
+        format!(" ~{} actually freed (APFS clones)", format_size(item.reclaimable_bytes))
+            .dimmed()
+            .to_string()
+    } else {
+        String::new()
+    };
     println!(
-        "    {} {:<40} {:>10}  ({})",
+        "    {} {:<40} {:>10}  ({}){}{}",
         category_icon,
         item.name,
         format_size(item.size_bytes),
-        format::format_count(item.file_count).dimmed()
+        format::format_count(item.file_count).dimmed(),
+        marker,
+        shared
     );
 
     if detailed {
@@ -147,6 +165,9 @@ fn print_scan_item(item: &ScanItem, detailed: bool) {
             format_path(&item.path).dimmed()
         );
         println!("      {} {}", "↳".dimmed(), item.reason.dimmed());
+        if let Some(ref t) = item.tool_action {
+            println!("      {} runs: {}", "↳".dimmed(), t.command_line().cyan());
+        }
 
         // Show top 5 largest files
         let mut sorted_files = item.files.clone();
@@ -211,33 +232,63 @@ pub fn print_profile_info(profile: &crate::profiles::loader::Profile) {
 
 /// Print a clean operation report
 pub fn print_clean_report(report: &crate::cleaner::CleanReport) {
+    use crate::cleaner::CleanMode;
     println!();
-    let icon = match report.mode {
-        crate::cleaner::CleanMode::DryRun => "ℹ️",
-        crate::cleaner::CleanMode::SoftDelete => "✓",
-        crate::cleaner::CleanMode::HardDelete => "🔥",
-    };
-    let mode_label = match report.mode {
-        crate::cleaner::CleanMode::DryRun => "Dry run",
-        crate::cleaner::CleanMode::SoftDelete => "Soft delete",
-        crate::cleaner::CleanMode::HardDelete => "Hard delete",
-    };
-
-    println!(
-        "  {} {} — {} files, {}",
-        icon,
-        mode_label.bold(),
-        report.files_removed.to_string().cyan(),
-        format_size_colored(report.bytes_freed),
-    );
+    match report.mode {
+        CleanMode::DryRun => println!(
+            "  {} {} — would remove {} items ({})",
+            "ℹ️",
+            "Dry run".bold(),
+            report.files_removed.to_string().cyan(),
+            format_size_colored(report.bytes_freed)
+        ),
+        CleanMode::SoftDelete => {
+            println!(
+                "  {} {} — {} items moved to the undo area ({})",
+                "✓",
+                "Soft delete".bold(),
+                report.files_removed.to_string().cyan(),
+                format_size_colored(report.bytes_staged)
+            );
+            if let Some(exp) = report.expires_at {
+                println!(
+                    "  {} Space is freed when the session expires ({}) or with {}",
+                    "💡",
+                    exp.format("%Y-%m-%d"),
+                    "tidymac purge --expired".cyan()
+                );
+            }
+        }
+        CleanMode::HardDelete => println!(
+            "  {} {} — {} items, {} freed",
+            "🔥",
+            "Permanently deleted".bold(),
+            report.files_removed.to_string().cyan(),
+            format_size_colored(report.bytes_freed)
+        ),
+    }
 
     if let Some(ref sid) = report.session_id {
         println!("  {} Session: {}", "💾", sid.cyan());
-        println!(
-            "  {} Undo with: {}",
-            "💡",
-            format!("tidymac undo --session {}", sid).cyan()
-        );
+        println!("  {} Undo with: {}", "💡", format!("tidymac undo --session {}", sid).cyan());
+    }
+
+    for t in &report.tool_actions {
+        println!("  {} {} {}", "🛠", t, "(not undoable)".dimmed());
+    }
+    for w in &report.warnings {
+        println!("  {} {}", "⚠".yellow(), w.yellow());
+    }
+
+    if !report.skipped.is_empty() {
+        println!();
+        println!("  {} {} skipped:", "⏭".dimmed(), report.skipped.len());
+        for s in report.skipped.iter().take(10) {
+            println!("    {} {} — {}", "•".dimmed(), format_path(&s.path).dimmed(), s.reason.dimmed());
+        }
+        if report.skipped.len() > 10 {
+            println!("    ... and {} more", report.skipped.len() - 10);
+        }
     }
 
     if !report.errors.is_empty() {
@@ -247,13 +298,15 @@ pub fn print_clean_report(report: &crate::cleaner::CleanReport) {
             println!("    {} {}", format!("{}.", i + 1).dimmed(), err.dimmed());
         }
         if report.errors.len() > 10 {
-            println!(
-                "    ... and {} more",
-                (report.errors.len() - 10).to_string().dimmed()
-            );
+            println!("    ... and {} more", (report.errors.len() - 10).to_string().dimmed());
         }
     }
     println!();
+}
+
+/// JSON for a clean report (CLI).
+pub fn clean_report_value(report: &crate::cleaner::CleanReport) -> serde_json::Value {
+    crate::ffi::clean_report_json(report)
 }
 
 /// Print the list of staging sessions
@@ -536,40 +589,7 @@ pub fn print_dup_results(results: &crate::duplicates::DupResults, detailed: bool
 
 /// Print duplicate results as JSON
 pub fn print_dup_json(results: &crate::duplicates::DupResults) {
-    let json = serde_json::json!({
-        "files_scanned": results.files_scanned,
-        "duration_secs": results.duration_secs,
-        "total_groups": results.total_groups,
-        "total_wasted": results.total_wasted,
-        "total_duplicates": results.total_duplicates,
-        "exact_groups": results.exact_groups.iter().map(|g| {
-            serde_json::json!({
-                "match_type": format!("{}", g.match_type),
-                "wasted_bytes": g.wasted_bytes,
-                "members": g.members.iter().map(|m| {
-                    serde_json::json!({
-                        "path": m.path.display().to_string(),
-                        "size_bytes": m.size_bytes,
-                        "similarity": m.similarity,
-                    })
-                }).collect::<Vec<_>>(),
-            })
-        }).collect::<Vec<_>>(),
-        "similar_groups": results.similar_groups.iter().map(|g| {
-            serde_json::json!({
-                "match_type": format!("{}", g.match_type),
-                "wasted_bytes": g.wasted_bytes,
-                "members": g.members.iter().map(|m| {
-                    serde_json::json!({
-                        "path": m.path.display().to_string(),
-                        "size_bytes": m.size_bytes,
-                        "similarity": m.similarity,
-                    })
-                }).collect::<Vec<_>>(),
-            })
-        }).collect::<Vec<_>>(),
-        "errors": results.errors,
-    });
+    let json = crate::duplicates::results_to_json(results);
     match serde_json::to_string_pretty(&json) {
         Ok(s) => println!("{}", s),
         Err(e) => eprintln!("Error serializing: {}", e),
@@ -669,11 +689,17 @@ pub fn print_app_info(app: &crate::apps::InstalledApp) {
             format_size(assoc_size)
         );
         for assoc in &existing {
+            let flag = if assoc.needs_confirmation() {
+                " (matched by name — use --include-name-matches)".yellow().to_string()
+            } else {
+                String::new()
+            };
             println!(
-                "    {} {} ({})",
+                "    {} {} ({}){}",
                 format!("[{}]", assoc.kind).dimmed(),
                 format_path(&assoc.path),
                 format_size(assoc.size),
+                flag
             );
         }
     }
@@ -683,31 +709,115 @@ pub fn print_app_info(app: &crate::apps::InstalledApp) {
     println!();
 }
 
+/// Print installer receipts and Homebrew info for an app.
+pub fn print_install_info(info: &crate::apps::InstallInfo) {
+    if let Some(ref cask) = info.brew_cask {
+        println!("  {} Installed with Homebrew cask '{}'", "🍺", cask.cyan());
+        if !info.brew_zap.is_empty() {
+            println!("    Cask zap stanza lists {} extra item(s):", info.brew_zap.len());
+            for f in &info.brew_zap {
+                println!("      {} {} ({})", "•".dimmed(), format_path(&f.path), format_size(f.size));
+            }
+        }
+    }
+    if !info.receipts.is_empty() {
+        println!("  {} Installer receipts:", "📦");
+        for r in &info.receipts {
+            println!(
+                "    {} {} {} — {} files. Files outside your home folder need admin rights; to forget the receipt: {}",
+                "•".dimmed(),
+                r.pkg_id,
+                r.version.clone().unwrap_or_default().dimmed(),
+                r.file_count,
+                r.forget_command.cyan()
+            );
+        }
+    }
+    if info.brew_cask.is_some() || !info.receipts.is_empty() {
+        println!();
+    }
+}
+
+/// Print orphaned leftovers.
+pub fn print_orphans(groups: &[crate::apps::OrphanGroup]) {
+    println!();
+    if groups.is_empty() {
+        println!("  {} No leftovers from uninstalled apps found.", "✨");
+        println!();
+        return;
+    }
+    let total: u64 = groups.iter().map(|g| g.total_size).sum();
+    println!(
+        "  {} Leftovers of {} apps that are no longer installed ({})",
+        "🧩",
+        groups.len(),
+        format_size_colored(total)
+    );
+    println!("{}", "─".repeat(60).dimmed());
+    for g in groups {
+        println!("  {:<50} {:>10}", g.bundle_id, format_size(g.total_size));
+        for f in &g.files {
+            println!(
+                "    {} {} ({})",
+                format!("[{}]", f.kind).dimmed(),
+                format_path(&f.path).dimmed(),
+                format_size(f.size)
+            );
+        }
+    }
+    println!();
+    println!(
+        "  {} Remove with {} (soft delete, undoable)",
+        "💡",
+        "tidymac apps orphans --clean <bundle-id>…".cyan()
+    );
+    println!();
+}
+
 /// Print uninstall report
 pub fn print_uninstall_report(report: &crate::apps::UninstallReport) {
     println!();
-    let icon = match report.mode {
-        crate::apps::uninstaller::UninstallMode::DryRun => "ℹ️",
-        crate::apps::uninstaller::UninstallMode::Remove => "✓",
-    };
-    let label = match report.mode {
-        crate::apps::uninstaller::UninstallMode::DryRun => "Dry run",
-        crate::apps::uninstaller::UninstallMode::Remove => "Removed",
-    };
-
-    println!(
-        "  {} {} '{}' — {} items, {}",
-        icon,
-        label.bold(),
-        report.app_name,
-        report.files_removed,
-        format_size_colored(report.bytes_freed),
-    );
+    let dry = report.mode == crate::apps::uninstaller::UninstallMode::DryRun;
+    if dry {
+        println!(
+            "  {} {} '{}' — would remove {} items",
+            "ℹ️",
+            "Dry run".bold(),
+            report.app_name,
+            report.files_removed
+        );
+    } else if report.session_id.is_some() {
+        println!(
+            "  {} {} '{}' — {} items moved to the undo area ({})",
+            "✓",
+            "Removed".bold(),
+            report.app_name,
+            report.files_removed,
+            format_size_colored(report.bytes_staged)
+        );
+    } else {
+        println!(
+            "  {} {} '{}' — {} items, {} freed",
+            "✓",
+            "Removed".bold(),
+            report.app_name,
+            report.files_removed,
+            format_size_colored(report.bytes_freed)
+        );
+    }
 
     for path in &report.removed_paths {
         println!("    {} {}", "✗".red(), format_path(path).dimmed());
     }
-
+    if let Some(ref sid) = report.session_id {
+        println!("  {} Undo with: {}", "💡", format!("tidymac undo --session {}", sid).cyan());
+    }
+    if !report.skipped.is_empty() {
+        println!();
+        for s in &report.skipped {
+            println!("    {} {} — {}", "⏭".dimmed(), format_path(&s.path).dimmed(), s.reason.dimmed());
+        }
+    }
     if !report.errors.is_empty() {
         println!();
         for err in &report.errors {

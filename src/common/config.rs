@@ -188,10 +188,33 @@ impl Config {
         self.large_file_threshold_mb * 1024 * 1024
     }
 
-    /// Check if a path should be excluded
+    /// Check if a path should be excluded.
+    ///
+    /// Patterns starting with `/` or `~` are path prefixes; anything else must
+    /// match a whole path component (so `node_modules` excludes
+    /// `.../app/node_modules` but `mod` does not exclude `node_modules`).
     pub fn is_excluded(&self, path: &Path) -> bool {
-        let path_str = path.display().to_string();
-        self.exclude_paths.iter().any(|p| path_str.contains(p))
+        let home = dirs::home_dir().unwrap_or_default();
+        let lower = path.to_string_lossy().to_lowercase();
+        self.exclude_paths.iter().any(|pattern| {
+            let pattern = pattern.trim();
+            if pattern.is_empty() {
+                return false;
+            }
+            if pattern.starts_with('/') || pattern.starts_with('~') {
+                let expanded = if let Some(rest) = pattern.strip_prefix('~') {
+                    format!("{}{}", home.display(), rest)
+                } else {
+                    pattern.to_string()
+                };
+                let prefix = expanded.trim_end_matches('/').to_lowercase();
+                lower == prefix || lower.starts_with(&format!("{}/", prefix))
+            } else {
+                let pat = pattern.to_lowercase();
+                path.components()
+                    .any(|c| c.as_os_str().to_string_lossy().to_lowercase() == pat)
+            }
+        })
     }
 }
 

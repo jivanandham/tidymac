@@ -2,13 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+      TidyMac is distributed outside the Mac App Store and is not sandboxed:
+      a cleaner must read ~/Library (with Full Disk Access granted by the user).
+
+      Deliberately NOT present:
+      - com.apple.security.files.all            (not a real entitlement)
+      - com.apple.security.cs.disable-library-validation
+      - com.apple.security.cs.allow-unsigned-executable-memory
+      The Rust library is signed with the same identity as the app, so the
+      hardened runtime's library validation can stay on.
+    -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
-    <key>com.apple.security.files.all</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
 </dict>
 </plist>

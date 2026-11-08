@@ -28,7 +28,7 @@ pub fn purge_expired() -> Result<PurgeReport> {
             // Just clean up the manifest directory
             let session_dir = Config::staging_dir().join(&session.session_id);
             if session_dir.exists() {
-                let _ = std::fs::remove_dir_all(&session_dir);
+                let _ = super::staging::remove_tree(&session_dir);
             }
             continue;
         }
@@ -41,7 +41,7 @@ pub fn purge_expired() -> Result<PurgeReport> {
         // Calculate actual size before removal
         let size = crate::scanner::walker::dir_size(&session_dir);
 
-        match std::fs::remove_dir_all(&session_dir) {
+        match super::staging::remove_tree(&session_dir) {
             Ok(()) => {
                 report.purged_sessions.push(PurgedSession {
                     session_id: session.session_id.clone(),
@@ -72,7 +72,7 @@ pub fn purge_session(session_id: &str) -> Result<u64> {
 
     let size = crate::scanner::walker::dir_size(&session_dir);
 
-    std::fs::remove_dir_all(&session_dir)
+    super::staging::remove_tree(&session_dir)
         .with_context(|| format!("Failed to purge session: {}", session_id))?;
 
     Ok(size)
@@ -107,7 +107,7 @@ pub fn purge_all() -> Result<PurgeReport> {
 
         let size = crate::scanner::walker::dir_size(&path);
 
-        match std::fs::remove_dir_all(&path) {
+        match super::staging::remove_tree(&path) {
             Ok(()) => {
                 report.purged_sessions.push(PurgedSession {
                     session_id,

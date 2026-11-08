@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::targets::{Category, DevTool, SafetyLevel, ScanItem};
+use crate::common::safety::DeletePolicy;
 use super::walker;
 
 /// Detect installed developer tools and their cache sizes
@@ -111,78 +112,93 @@ pub fn detect_dev_environment() -> Vec<DevToolInfo> {
     tools
 }
 
+/// Folders where projects usually live. Duplicates (e.g. `Projects` and
+/// `projects` on a case-insensitive volume) are removed by canonicalizing.
+pub fn project_search_roots() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let candidates = [
+        "Developer",
+        "Projects",
+        "projects",
+        "Code",
+        "code",
+        "Development",
+        "dev",
+        "workspace",
+        "repos",
+        "src",
+        "git",
+        "GitHub",
+        "Documents",
+        "Desktop",
+    ];
+    let mut seen = std::collections::HashSet::new();
+    let mut roots = Vec::new();
+    for c in candidates {
+        let p = home.join(c);
+        if let Ok(canon) = std::fs::canonicalize(&p) {
+            if canon.is_dir() && seen.insert(canon.to_string_lossy().to_lowercase()) {
+                roots.push(canon);
+            }
+        }
+    }
+    // Drop roots nested inside another root (they'd be walked twice).
+    let all = roots.clone();
+    roots.retain(|r| {
+        !all.iter()
+            .any(|o| o != r && r.starts_with(o))
+    });
+    roots
+}
+
+fn artifact_item(name: String, tool: DevTool, reason: String, files: Vec<super::targets::FileEntry>) -> ScanItem {
+    let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
+    // Each entry's project folder is its root: the entry is strictly inside it.
+    let mut roots: Vec<PathBuf> = files
+        .iter()
+        .filter_map(|f| f.path.parent().map(|p| p.to_path_buf()))
+        .collect();
+    roots.sort();
+    roots.dedup();
+    ScanItem {
+        name,
+        category: Category::DevCache(tool),
+        path: dirs::home_dir().unwrap_or_default(),
+        size_bytes: total_size,
+        reclaimable_bytes: total_size,
+        file_count: files.len(),
+        safety: SafetyLevel::Safe,
+        reason,
+        files,
+        roots,
+        policy: DeletePolicy::DevArtifact,
+        ..Default::default()
+    }
+}
+
 /// Scan for stale node_modules across project directories
 pub fn scan_node_modules(stale_days: u32) -> ScanItem {
-    let home = dirs::home_dir().unwrap_or_default();
-    let search_roots = vec![
-        home.join("Projects"),
-        home.join("projects"),
-        home.join("Code"),
-        home.join("code"),
-        home.join("Development"),
-        home.join("dev"),
-        home.join("workspace"),
-        home.join("repos"),
-        home.join("src"),
-        home.join("Documents"),
-        home.join("Desktop"),
-    ];
-
-    let existing_roots: Vec<PathBuf> = search_roots.into_iter().filter(|p| p.exists()).collect();
-    let files = walker::find_node_modules(&existing_roots, stale_days);
-
-    let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
-    let count = files.len();
-
-    ScanItem {
-        name: format!("Stale node_modules (>{} days)", stale_days),
-        category: Category::DevCache(DevTool::NodeModules),
-        path: home.join("**/node_modules"),
-        size_bytes: total_size,
-        file_count: count,
-        safety: SafetyLevel::Safe,
-        reason: format!(
-            "node_modules in projects not modified for {}+ days — reinstall with 'npm install'",
+    let files = walker::find_node_modules(&project_search_roots(), stale_days);
+    artifact_item(
+        format!("Stale node_modules (>{} days)", stale_days),
+        DevTool::NodeModules,
+        format!(
+            "node_modules in projects untouched for {}+ days — reinstall with 'npm install'",
             stale_days
         ),
         files,
-    }
+    )
 }
 
 /// Scan for stale Python virtual environments
 pub fn scan_venvs(stale_days: u32) -> ScanItem {
-    let home = dirs::home_dir().unwrap_or_default();
-    let search_roots = vec![
-        home.join("Projects"),
-        home.join("projects"),
-        home.join("Code"),
-        home.join("code"),
-        home.join("Development"),
-        home.join("dev"),
-        home.join("workspace"),
-        home.join("repos"),
-        home.join("src"),
-        home.join("Documents"),
-    ];
-
-    let existing_roots: Vec<PathBuf> = search_roots.into_iter().filter(|p| p.exists()).collect();
-    let files = walker::find_venvs(&existing_roots, stale_days);
-
-    let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
-    let count = files.len();
-
-    ScanItem {
-        name: format!("Stale Python venvs (>{} days)", stale_days),
-        category: Category::DevCache(DevTool::Venv),
-        path: home.join("**/.venv"),
-        size_bytes: total_size,
-        file_count: count,
-        safety: SafetyLevel::Safe,
-        reason: format!(
-            "Python virtualenvs in stale projects — recreate with 'python -m venv .venv'",
-        ),
+    let files = walker::find_venvs(&project_search_roots(), stale_days);
+    artifact_item(
+        format!("Stale Python venvs (>{} days)", stale_days),
+        DevTool::Venv,
+        "Python virtualenvs in stale projects — recreate with 'python -m venv .venv'".to_string(),
         files,
-    }
+    )
 }
 
 #[derive(Debug, Clone)]

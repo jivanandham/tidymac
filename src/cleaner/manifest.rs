@@ -41,6 +41,30 @@ pub struct CleanManifest {
 
     /// Errors encountered
     pub errors: Vec<String>,
+
+    /// False while a clean is in progress. A crash leaves `complete = false`
+    /// and the per-item journal next to the manifest is used to recover.
+    #[serde(default = "default_true")]
+    pub complete: bool,
+
+    /// Tool-backed cleanups that ran in this session (not undoable).
+    #[serde(default)]
+    pub tool_actions: Vec<String>,
+
+    /// Items skipped by the safety checks, with reasons.
+    #[serde(default)]
+    pub skipped: Vec<SkippedEntry>,
+}
+
+/// An item that was not removed, and why.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkippedEntry {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A single file/directory entry in the manifest
@@ -79,7 +103,10 @@ impl CleanManifest {
     /// Create a new manifest for a cleaning session
     pub fn new(profile: &str, mode: &str, retention_days: u32) -> Self {
         let now = Utc::now();
-        let session_id = now.format("%Y-%m-%dT%H-%M-%S").to_string();
+        // Millisecond timestamp + random suffix: two sessions in the same second
+        // can no longer collide and overwrite each other's staging folder.
+        let suffix: String = uuid::Uuid::new_v4().simple().to_string().chars().take(4).collect();
+        let session_id = format!("{}-{}", now.format("%Y-%m-%dT%H-%M-%S-%3f"), suffix);
         let expires_at = if mode == "soft_delete" {
             Some(now + Duration::days(retention_days as i64))
         } else {
@@ -98,7 +125,40 @@ impl CleanManifest {
             restored: false,
             items: Vec::new(),
             errors: Vec::new(),
+            complete: true,
+            tool_actions: Vec::new(),
+            skipped: Vec::new(),
         }
+    }
+
+    /// Record a skipped item.
+    pub fn add_skipped(&mut self, path: PathBuf, reason: String) {
+        self.skipped.push(SkippedEntry { path, reason });
+    }
+
+    /// Path of the per-item journal for this session.
+    pub fn journal_path(&self) -> PathBuf {
+        self.staging_session_dir().join("journal.jsonl")
+    }
+
+    /// Append one item to the journal (crash safety). Soft-delete only.
+    pub fn journal_append(&self, item: &ManifestItem) -> Result<()> {
+        if self.mode != "soft_delete" {
+            return Ok(());
+        }
+        use std::io::Write;
+        let path = self.journal_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("Failed to open journal: {}", path.display()))?;
+        writeln!(f, "{}", serde_json::to_string(item)?)?;
+        f.sync_data().ok();
+        Ok(())
     }
 
     /// Add a successfully processed item
@@ -134,31 +194,34 @@ impl CleanManifest {
         self.staging_session_dir().join("files")
     }
 
-    /// Save manifest to disk as JSON
+    /// Write the manifest to the staging session directory (soft-delete only).
+    /// Written atomically (temp file + rename) so a crash can't leave half a file.
     pub fn save(&self) -> Result<()> {
-        // Save to staging session directory (for soft-delete)
-        if self.mode == "soft_delete" {
-            let session_dir = self.staging_session_dir();
-            std::fs::create_dir_all(&session_dir).with_context(|| {
-                format!("Failed to create session dir: {}", session_dir.display())
-            })?;
-
-            let manifest_path = session_dir.join("manifest.json");
-            let json =
-                serde_json::to_string_pretty(self).context("Failed to serialize manifest")?;
-            std::fs::write(&manifest_path, &json).with_context(|| {
-                format!("Failed to write manifest: {}", manifest_path.display())
-            })?;
+        if self.mode != "soft_delete" {
+            return Ok(());
         }
+        let session_dir = self.staging_session_dir();
+        std::fs::create_dir_all(&session_dir)
+            .with_context(|| format!("Failed to create session dir: {}", session_dir.display()))?;
 
-        // Append to the daily log file (JSONL format)
+        let manifest_path = session_dir.join("manifest.json");
+        let tmp_path = session_dir.join("manifest.json.tmp");
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize manifest")?;
+        std::fs::write(&tmp_path, &json)
+            .with_context(|| format!("Failed to write manifest: {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &manifest_path)
+            .with_context(|| format!("Failed to write manifest: {}", manifest_path.display()))?;
+        Ok(())
+    }
+
+    /// Append this session to the daily audit log (`~/.tidymac/logs/clean-YYYY-MM-DD.jsonl`).
+    pub fn append_log(&self) -> Result<()> {
         let log_dir = Config::logs_dir();
         std::fs::create_dir_all(&log_dir)
             .with_context(|| format!("Failed to create logs dir: {}", log_dir.display()))?;
 
         let log_date = self.timestamp.format("%Y-%m-%d").to_string();
         let log_path = log_dir.join(format!("clean-{}.jsonl", log_date));
-
         let log_entry = serde_json::to_string(self).context("Failed to serialize log entry")?;
 
         use std::io::Write;
@@ -168,7 +231,6 @@ impl CleanManifest {
             .open(&log_path)
             .with_context(|| format!("Failed to open log: {}", log_path.display()))?;
         writeln!(file, "{}", log_entry)?;
-
         Ok(())
     }
 
@@ -183,10 +245,33 @@ impl CleanManifest {
         let contents = std::fs::read_to_string(&manifest_path)
             .with_context(|| format!("Failed to read manifest: {}", manifest_path.display()))?;
 
-        let manifest: CleanManifest = serde_json::from_str(&contents)
+        let mut manifest: CleanManifest = serde_json::from_str(&contents)
             .with_context(|| format!("Failed to parse manifest: {}", manifest_path.display()))?;
 
+        // Recover items from an interrupted clean.
+        if !manifest.complete {
+            manifest.recover_from_journal();
+        }
+
         Ok(manifest)
+    }
+
+    /// Merge journal entries that aren't in the manifest yet (after a crash).
+    pub fn recover_from_journal(&mut self) {
+        let journal = self.journal_path();
+        let contents = match std::fs::read_to_string(&journal) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let known: std::collections::HashSet<PathBuf> =
+            self.items.iter().map(|i| i.original_path.clone()).collect();
+        for line in contents.lines() {
+            if let Ok(item) = serde_json::from_str::<ManifestItem>(line) {
+                if !known.contains(&item.original_path) {
+                    self.add_item(item);
+                }
+            }
+        }
     }
 
     /// List all available sessions in the staging area

@@ -12,7 +12,6 @@
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Swift](https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white)](https://swift.org)
 [![macOS](https://img.shields.io/badge/macOS-14%2B_Sonoma-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
-[![Tests](https://img.shields.io/badge/Tests-81_passing-brightgreen?logo=checkmarx&logoColor=white)](#testing)
 
 <br>
 
@@ -94,9 +93,15 @@ cd tidymac && ./scripts/build-dmg.sh
 ### 🛡️ Safety First
 
 - **Dry-run mode** — preview before cleaning
-- **7-day undo** — recover with `tidymac undo --last`
-- **Protected paths** — `~/.ssh`, `/System`, `~/Documents` are never touched, even with bugs
-- **100% offline** — zero telemetry, zero network calls
+- **7-day undo** — soft delete moves items to `~/.tidymac/staging`; recover with `tidymac undo --last`
+  (space is freed when the session expires or with `tidymac purge`)
+- **One deletion engine** — every removal (cleans, uninstalls, privacy, duplicates) is checked by the
+  same safety guard right before it happens: canonical paths, case-insensitive, must be inside the
+  scanned folder, never a folder root
+- **Protected paths** — system folders, Keychains, iCloud Drive, Mail, Messages, Photos libraries,
+  `~/.ssh` and other credentials are never deletable; `~/Documents` & co. only for single files you pick
+- **In-use detection** — anything belonging to a running app is skipped
+- **No network code** — no telemetry, no crash reporter, no update pings
 
 </td>
 </tr>
@@ -104,8 +109,23 @@ cd tidymac && ./scripts/build-dmg.sh
 
 ### How TidyMac Compares
 
-| Feature | TidyMac | CleanMyMac&nbsp;X | AppCleaner |
-|:--------|:-------:|:---------:|:----------:|
+Based on each tool's documented features (late 2026). ◐ = partial.
+
+| Feature | TidyMac | CleanMyMac 5 | Mole | AppCleaner |
+|:--------|:-------:|:------------:|:----:|:----------:|
+| Developer caches (Xcode, simulators via `simctl`, npm, Cargo, Go, Docker via `docker prune`…) | ✅ | ◐ Xcode | ✅ | ❌ |
+| Native GUI **and** scriptable CLI on one engine | ✅ | GUI only | CLI (+ paid GUI) | GUI only |
+| Review list before cleaning | ✅ per entry | ✅ | ✅ `--dry-run` | ✅ |
+| Undo after cleaning | ✅ staging + `tidymac undo` | ◐ some items to Trash | ❌ permanent | ◐ Trash |
+| APFS clone-aware "actually freed" sizes | ✅ | ❌ | ❌ | ❌ |
+| Custom rules in profile files | ✅ `[[rules]]` | ❌ | ◐ whitelist | ❌ |
+| Leftovers of uninstalled apps | ✅ | ✅ | ✅ | ❌ |
+| Disk map (treemap) | ✅ | ✅ | ◐ TUI | ❌ |
+| JSON output / scheduled reports | ✅ | ❌ | ✅ | ❌ |
+| No network code | ✅ | ❌ | ✅ | ✅ |
+| Price | Free, MIT | ~$40/yr | Free (CLI) | Free |
+
+--------|:-------:|:---------:|:----------:|
 | Developer cache detection (14+ tools) | ✅ | ❌ | ❌ |
 | Native SwiftUI + CLI | ✅ | GUI only | GUI only |
 | Dry-run before cleaning | ✅ | ❌ | ❌ |
@@ -168,7 +188,7 @@ tidymac clean --dry-run                   # Preview what would be cleaned
 ```bash
 tidymac undo --last                       # Restore last cleanup
 tidymac undo --list                       # View all recovery sessions
-tidymac undo --session 2026-02-15T19-30-00
+tidymac undo --session 2026-02-15T19-30-00-123-ab12
 ```
 
 </details>
@@ -199,6 +219,8 @@ Pass 4: Perceptual hash    ──► finds visually similar images (optional)
 tidymac apps list --sort size             # List apps by total footprint
 tidymac apps info Slack                   # See app + all associated files
 tidymac apps remove Slack --dry-run       # Preview complete removal
+tidymac apps remove com.tinyspeck.slackmacgap   # Exact bundle id also works
+# Names must match exactly; folders matched only by name need --include-name-matches
 ```
 
 </details>
@@ -224,6 +246,38 @@ tidymac privacy clean --dry-run           # Preview privacy cleanup
 ```
 
 Supports: Chrome, Firefox, Safari, Brave, Edge, Arc, Vivaldi, Opera — cookies, history, local storage, cache, and tracking data.
+
+</details>
+
+<details>
+<summary><b>🗺 Disk Map & System Data</b> — Where did my space go?</summary>
+
+```bash
+tidymac map                               # Biggest folders in your home folder
+tidymac map ~/Library --depth 3 --top 20  # Drill into a folder
+tidymac system-data                       # Explain macOS "System Data"
+```
+
+</details>
+
+<details>
+<summary><b>🧩 Leftovers of uninstalled apps</b></summary>
+
+```bash
+tidymac apps orphans                              # List leftovers (conservative)
+tidymac apps orphans --clean com.example.oldapp   # Remove them (undoable)
+```
+
+</details>
+
+<details>
+<summary><b>⏰ Scheduled reports</b> — Dry runs on a schedule, never deletes</summary>
+
+```bash
+tidymac schedule install --profile developer --every weekly
+tidymac schedule status
+tidymac schedule remove
+```
 
 </details>
 
@@ -283,7 +337,9 @@ tidymac config clear-cache                # Clear the scan cache
 | 🟠 `creative` | Medium | + Render files, previews | After creative projects |
 | 🔴 `deep` | High | Everything + large files | Monthly deep clean |
 
-> 💡 Create custom profiles in `~/.tidymac/profiles/custom.toml`
+> 💡 Create custom profiles in `~/.tidymac/profiles/<name>.toml`, including your own
+> `[[rules]]` (paths, minimum age/size, extensions). See `profiles/custom_example.toml`.
+> `tidymac clean` only includes **Safe** items unless you pass `--max-safety caution`.
 
 ---
 
@@ -355,7 +411,7 @@ tidymac/
 │   └── Libraries/           # FFI artifacts (dylib, header, modulemap)
 ├── profiles/                # 📋 Built-in cleanup profiles (TOML)
 ├── scripts/                 # 🛠️ Build & release automation
-├── tests/                   # ✅ Integration & unit tests (81 tests)
+├── tests/                   # ✅ Integration & unit tests
 └── .github/workflows/       # 🔄 CI/CD pipelines
 ```
 
@@ -391,20 +447,19 @@ cd TidyMac && swift run TidyMacApp
 ## ✅ Testing
 
 ```bash
-cargo test                    # Run all 81 tests
-cargo test --lib              # Unit tests only
-cargo test --test cli_test    # CLI integration tests
-cargo test --test hasher_test # Duplicate detection tests
+cargo test --all-targets      # Rust unit + integration tests
+cd TidyMac && swift test      # Swift model/treemap tests (after ./scripts/build-ffi.sh)
 ```
 
-| Test Suite | Tests | Covers |
-|:-----------|:-----:|:-------|
-| Unit (format, safety) | 12 | Formatting, protected paths, validation |
-| CLI integration | 23 | Every command, error cases, JSON output |
-| Hasher | 9 | 3-pass pipeline, edge cases, grouping |
-| Scanner | 30 | Config, profiles, walker, permissions |
-| Staging | 7 | Manifest, staging, restore, serialization |
-| **Total** | **81** | |
+CI fails on any test failure, Clippy warning, or formatting difference.
+
+### Signing for personal use
+
+macOS ties Full Disk Access to the app's code signature. An ad-hoc signed build
+loses the permission on every rebuild, so `build-dmg.sh` picks up your
+**Apple Development** certificate automatically (free: Xcode › Settings ›
+Accounts › Manage Certificates › +). Set `CODESIGN_IDENTITY` to override and
+`NOTARY_PROFILE` to notarize with a Developer ID.
 
 ---
 
@@ -415,8 +470,10 @@ cargo test --test hasher_test # Duplicate detection tests
 - [x] 🍺 **Homebrew formula** — `brew tap jivanandham/tidymac && brew install tidymac`
 - [x] ⚡ **Incremental scan caching** — Only re-scan changed files
 - [x] 🐳 **Docker integration** — `docker system prune` integration
-- [ ] ⏰ **Scheduled cleanup** — Automated profiles via launchd
-- [ ] 📌 **Menu bar app** — Quick-access from the macOS menu bar
+- [x] ⏰ **Scheduled reports** — Dry-run profiles via launchd
+- [x] 📌 **Menu bar extra** — Free space and quick actions
+- [x] 🗺 **Disk map** — Treemap with drill-down
+- [x] 🧩 **Orphaned leftovers** — With Homebrew zap and pkgutil receipts
 
 ---
 

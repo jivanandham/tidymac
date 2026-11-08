@@ -2,6 +2,10 @@ import SwiftUI
 
 struct PrivacyView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var cleanCaches = true
+    @State private var cleanBrowserCookies = false
+    @State private var cleanAppCookies = false
+    @State private var confirmClean = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,6 +19,20 @@ struct PrivacyView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if viewModel.privacyResult != nil {
+                    Menu {
+                        Toggle("Browser caches", isOn: $cleanCaches)
+                        Toggle("Browser cookies (signs you out of websites)", isOn: $cleanBrowserCookies)
+                        Toggle("App cookies (signs you out of apps)", isOn: $cleanAppCookies)
+                        Divider()
+                        Button("Clean…") { confirmClean = true }
+                            .disabled(!cleanCaches && !cleanBrowserCookies && !cleanAppCookies)
+                    } label: {
+                        Label("Clean", systemImage: "trash")
+                    }
+                    .fixedSize()
+                    .disabled(viewModel.isLoadingPrivacy)
+                }
                 Button {
                     viewModel.loadPrivacy()
                 } label: {
@@ -128,6 +146,17 @@ struct PrivacyView: View {
                 )
                 Spacer()
             }
+        }
+        .alert("Clean privacy data?", isPresented: $confirmClean) {
+            Button("Cancel", role: .cancel) {}
+            Button("Move to Undo Area") {
+                viewModel.cleanPrivacy(caches: cleanCaches, browserCookies: cleanBrowserCookies, appCookies: cleanAppCookies)
+            }
+        } message: {
+            Text("Browsers that are running are skipped — quit them first. Browsing history is never deleted. Everything can be restored from History for 7 days.")
+        }
+        .sheet(isPresented: $viewModel.showActionResult) {
+            CleanResultSheet(result: viewModel.lastActionResult)
         }
         .onAppear {
             if viewModel.privacyResult == nil {

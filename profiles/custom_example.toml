@@ -1,0 +1,37 @@
+# Copy to ~/.tidymac/profiles/<name>.toml and run: tidymac scan --profile <name>
+[profile]
+name = "my_cleanup"
+description = "Developer caches plus my own rules"
+aggression = "medium"
+
+[targets]
+user_caches = true
+logs = true
+trash = true
+large_files = false
+
+[targets.dev]
+xcode_derived_data = true
+npm_cache = true
+node_modules_stale = true
+
+[thresholds]
+stale_days = 45
+
+# Custom rules: every direct child of each path is one entry.
+# Protected folders (Documents, Desktop, Library/Application Support, …) stay
+# protected even if you list them here.
+[[rules]]
+name = "Old screen recordings in Downloads"
+paths = ["~/Downloads"]
+extensions = ["mov", "mp4"]
+include_folders = false
+min_age_days = 30
+min_size_mb = 50
+safety = "caution"
+
+[[rules]]
+name = "Old Zoom recordings cache"
+paths = ["~/Library/Caches/us.zoom.xos"]
+min_age_days = 14
+safety = "safe"

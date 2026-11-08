@@ -135,7 +135,7 @@ fn parse_launch_plist(path: &Path, kind: StartupKind) -> Option<StartupItem> {
 fn check_disabled_override(label: &str) -> bool {
     // Use launchctl to check if the service is disabled
     let output = std::process::Command::new("launchctl")
-        .args(["print-disabled", "user/501"])
+        .args(["print-disabled", &crate::common::sys::gui_domain()])
         .output();
 
     match output {
@@ -158,14 +158,14 @@ pub fn disable_item(item: &StartupItem) -> Result<String> {
         StartupKind::UserLaunchAgent => {
             // Use launchctl to disable
             let status = std::process::Command::new("launchctl")
-                .args(["disable", &format!("user/501/{}", item.label)])
+                .args(["disable", &format!("{}/{}", crate::common::sys::gui_domain(), item.label)])
                 .status()
                 .context("Failed to run launchctl")?;
 
             if status.success() {
                 // Also unload if loaded
                 let _ = std::process::Command::new("launchctl")
-                    .args(["bootout", &format!("user/501/{}", item.label)])
+                    .args(["bootout", &format!("{}/{}", crate::common::sys::gui_domain(), item.label)])
                     .status();
 
                 Ok(format!("Disabled '{}'", item.label))
@@ -191,14 +191,14 @@ pub fn enable_item(item: &StartupItem) -> Result<String> {
     match item.kind {
         StartupKind::UserLaunchAgent => {
             let status = std::process::Command::new("launchctl")
-                .args(["enable", &format!("user/501/{}", item.label)])
+                .args(["enable", &format!("{}/{}", crate::common::sys::gui_domain(), item.label)])
                 .status()
                 .context("Failed to run launchctl")?;
 
             if status.success() {
                 // Also bootstrap (load) the service
                 let _ = std::process::Command::new("launchctl")
-                    .args(["bootstrap", "user/501", &item.path.display().to_string()])
+                    .args(["bootstrap", &crate::common::sys::gui_domain(), &item.path.display().to_string()])
                     .status();
 
                 Ok(format!("Enabled '{}'", item.label))
@@ -212,13 +212,24 @@ pub fn enable_item(item: &StartupItem) -> Result<String> {
     }
 }
 
-/// Find a startup item by name or label (case-insensitive partial match)
+/// Find startup items: an exact label match wins; otherwise exact name
+/// matches; otherwise case-insensitive partial matches (for listing only).
 pub fn find_item_by_name<'a>(items: &'a [StartupItem], name: &str) -> Vec<&'a StartupItem> {
+    if let Some(exact) = find_item_by_label(items, name) {
+        return vec![exact];
+    }
     let lower = name.to_lowercase();
+    let exact_names: Vec<&StartupItem> = items.iter().filter(|i| i.name.to_lowercase() == lower).collect();
+    if !exact_names.is_empty() {
+        return exact_names;
+    }
     items
         .iter()
-        .filter(|i| {
-            i.name.to_lowercase().contains(&lower) || i.label.to_lowercase().contains(&lower)
-        })
+        .filter(|i| i.name.to_lowercase().contains(&lower) || i.label.to_lowercase().contains(&lower))
         .collect()
+}
+
+/// Exact (case-sensitive) launchd label lookup — use this before changing anything.
+pub fn find_item_by_label<'a>(items: &'a [StartupItem], label: &str) -> Option<&'a StartupItem> {
+    items.iter().find(|i| i.label == label)
 }

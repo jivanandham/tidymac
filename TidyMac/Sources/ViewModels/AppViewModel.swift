@@ -18,7 +18,11 @@ class AppViewModel: ObservableObject {
     @Published var scanResult: ScanResult?
     @Published var isScanning = false
     @Published var selectedProfile: String = UserDefaults.standard.string(forKey: "defaultProfile") ?? "developer"
-    @Published var selectedItems: Set<UUID> = []
+    /// Selected item ids (indices) of the current scan.
+    @Published var selectedItems: Set<Int> = []
+    /// Entries the user unticked inside selected items.
+    @Published var excludedEntries: Set<String> = []
+    @Published var scanError: String?
     @Published var lastScanDate: Double = UserDefaults.standard.double(forKey: "lastScanDate")
 
     // MARK: - Clean
@@ -31,14 +35,27 @@ class AppViewModel: ObservableObject {
         selectedItems.count
     }
 
+    private var selectedCleanableItems: [ScanItem] {
+        guard let items = scanResult?.items else { return [] }
+        return items.filter { selectedItems.contains($0.id) && $0.cleanable }
+    }
+
     var selectedFileCount: Int {
-        guard let items = scanResult?.items else { return 0 }
-        return items.filter { selectedItems.contains($0.id) }.reduce(0) { $0 + $1.fileCount }
+        selectedCleanableItems.reduce(0) { total, item in
+            total + item.entries.filter { !excludedEntries.contains($0.path) }.count
+                + max(0, item.entryCount - item.entries.count)
+        }
     }
 
     var selectedBytes: UInt64 {
-        guard let items = scanResult?.items else { return 0 }
-        return items.filter { selectedItems.contains($0.id) }.reduce(UInt64(0)) { $0 + $1.sizeBytes }
+        selectedCleanableItems.reduce(UInt64(0)) { total, item in
+            let excluded = item.entries.filter { excludedEntries.contains($0.path) }.reduce(UInt64(0)) { $0 + $1.sizeBytes }
+            return total + (item.sizeBytes > excluded ? item.sizeBytes - excluded : 0)
+        }
+    }
+
+    var selectionIncludesTools: Bool {
+        selectedCleanableItems.contains { $0.toolAction != nil }
     }
 
     var selectedSizeFormatted: String {
@@ -59,6 +76,33 @@ class AppViewModel: ObservableObject {
     @Published var appCleanResult: AppCleanResult?
     @Published var showAppCleanResult = false
     @Published var isCleaningApp = false
+    @Published var installInfo: [String: InstallInfoResult] = [:]
+
+    // MARK: - Leftovers of uninstalled apps
+    @Published var orphans: [OrphanGroupInfo] = []
+    @Published var isLoadingOrphans = false
+    @Published var orphanCleanResult: CleanResult?
+
+    // MARK: - Duplicates
+    @Published var dupResult: DupResult?
+    @Published var isFindingDuplicates = false
+    @Published var dupFolder: URL? = FileManager.default.homeDirectoryForCurrentUser
+    @Published var dupCleanResult: CleanResult?
+
+    // MARK: - Disk map
+    @Published var diskTree: DiskNode?
+    @Published var diskMapPath: [String] = []
+    @Published var isLoadingDiskTree = false
+    @Published var systemData: SystemDataInfo?
+    @Published var isLoadingSystemData = false
+
+    // MARK: - Schedule
+    @Published var schedule: ScheduleInfo?
+    @Published var scheduleError: String?
+
+    // MARK: - Generic result sheet (large files, privacy, purge)
+    @Published var lastActionResult: CleanResult?
+    @Published var showActionResult = false
 
     // MARK: - Privacy
     @Published var privacyResult: PrivacyResult?
@@ -89,6 +133,7 @@ class AppViewModel: ObservableObject {
         loadSavedBookmarks()
         loadProfiles()
         loadDiskUsage()
+        loadSchedule()
     }
 
     // MARK: - Actions
@@ -111,16 +156,18 @@ class AppViewModel: ObservableObject {
         scanResult = nil
         let profile = selectedProfile
         Task.detached { [bridge] in
-            let result = bridge.scan(profile: profile)
+            let (result, error) = bridge.scan(profile: profile)
             let now = Date().timeIntervalSince1970
             UserDefaults.standard.set(now, forKey: "lastScanDate")
             
             await MainActor.run { [weak self] in
                 self?.scanResult = result
+                self?.scanError = (error == "CANCELLED") ? nil : error
                 self?.isScanning = false
                 self?.lastScanDate = now
+                self?.excludedEntries = []
                 if let items = result?.items {
-                    self?.selectedItems = Set(items.filter { $0.safety == "Safe" }.map { $0.id })
+                    self?.selectedItems = Set(items.filter { $0.safety == "Safe" && $0.cleanable }.map { $0.id })
                 }
             }
         }
@@ -130,35 +177,64 @@ class AppViewModel: ObservableObject {
         bridge.cancelScan()
     }
 
+    /// Clean exactly what the user reviewed: the selected items of the current
+    /// scan, minus unticked entries. The core rejects stale scans.
     func runClean(mode: String) {
-        startAccessingSecurityScopedResources()
+        guard let scan = scanResult else { return }
+        let ids = selectedCleanableItems.map { $0.id }
+        guard !ids.isEmpty else { return }
+        let excluded = Array(excludedEntries)
+        let profile = scan.profile
+        let scanId = scan.scanId
         isCleaning = true
-        let profile = selectedProfile
-
-        var selectedNames: [String]? = nil
-        if let items = scanResult?.items {
-            let names = items.filter { selectedItems.contains($0.id) }.map { $0.name }
-            if !names.isEmpty {
-                selectedNames = names
-            }
-        }
 
         Task.detached { [bridge] in
-            let result = bridge.clean(profile: profile, mode: mode, selectedNames: selectedNames)
+            let result = bridge.clean(profile: profile, mode: mode, scanId: scanId, itemIds: ids, excludePaths: excluded)
             await MainActor.run { [weak self] in
                 self?.cleanResult = result
                 self?.isCleaning = false
                 self?.showCleanResult = true
+                if result?.error == nil {
+                    // The core forgets a scan once it has been cleaned.
+                    self?.scanResult = nil
+                    self?.selectedItems = []
+                    self?.excludedEntries = []
+                }
                 self?.loadDiskUsage()
             }
         }
     }
 
-    func cleanAppLeftovers(appName: String) {
-        startAccessingSecurityScopedResources()
-        isCleaningApp = true
+    func toggleEntry(_ path: String) {
+        if excludedEntries.contains(path) {
+            excludedEntries.remove(path)
+        } else {
+            excludedEntries.insert(path)
+        }
+    }
+
+    /// Remove hand-picked files (large files, duplicates). Soft delete → undoable.
+    func removeFiles(_ paths: [String], label: String, completion: (() -> Void)? = nil) {
+        guard !paths.isEmpty else { return }
         Task.detached { [bridge] in
-            let result = bridge.appCleanLeftovers(appName: appName)
+            let result = bridge.deletePaths(paths, mode: "soft", label: label)
+            await MainActor.run { [weak self] in
+                self?.lastActionResult = result
+                self?.showActionResult = true
+                self?.loadDiskUsage()
+                completion?()
+            }
+        }
+    }
+
+    // MARK: - Apps
+
+    /// Clear caches/logs/saved state of an installed app (keeps settings and data).
+    func cleanAppCaches(app: AppInfo) {
+        isCleaningApp = true
+        let id = app.identifier
+        Task.detached { [bridge] in
+            let result = bridge.appCleanLeftovers(identifier: id)
             await MainActor.run { [weak self] in
                 self?.appCleanResult = result
                 self?.isCleaningApp = false
@@ -166,6 +242,179 @@ class AppViewModel: ObservableObject {
                 self?.loadApps()
             }
         }
+    }
+
+    /// Uninstall an app (bundle + data). Soft delete by default, so it can be undone from History.
+    func uninstallApp(app: AppInfo, includeNameMatches: Bool, onlyPaths: [String], mode: String = "soft") {
+        isCleaningApp = true
+        let id = app.identifier
+        Task.detached { [bridge] in
+            let result = bridge.uninstallApp(identifier: id, mode: mode, includeNameMatches: includeNameMatches, onlyPaths: onlyPaths)
+            await MainActor.run { [weak self] in
+                self?.appCleanResult = result
+                self?.isCleaningApp = false
+                self?.showAppCleanResult = true
+                self?.loadApps()
+                self?.loadDiskUsage()
+            }
+        }
+    }
+
+    func loadInstallInfo(app: AppInfo) {
+        guard installInfo[app.path] == nil else { return }
+        let path = app.path
+        Task.detached { [bridge] in
+            let info = bridge.appInstallInfo(path: path)
+            await MainActor.run { [weak self] in
+                if let info = info { self?.installInfo[path] = info }
+            }
+        }
+    }
+
+    func loadOrphans() {
+        isLoadingOrphans = true
+        Task.detached { [bridge] in
+            let result = bridge.orphans()
+            await MainActor.run { [weak self] in
+                self?.orphans = result
+                self?.isLoadingOrphans = false
+            }
+        }
+    }
+
+    func cleanOrphans(paths: [String]) {
+        guard !paths.isEmpty else { return }
+        isLoadingOrphans = true
+        Task.detached { [bridge] in
+            let result = bridge.cleanOrphans(paths: paths)
+            let refreshed = bridge.orphans()
+            await MainActor.run { [weak self] in
+                self?.orphanCleanResult = result
+                self?.lastActionResult = result
+                self?.showActionResult = true
+                self?.orphans = refreshed
+                self?.isLoadingOrphans = false
+            }
+        }
+    }
+
+    // MARK: - Duplicates
+
+    func findDuplicates(perceptual: Bool) {
+        guard let folder = dupFolder else { return }
+        isFindingDuplicates = true
+        dupResult = nil
+        let path = folder.path
+        Task.detached { [bridge] in
+            let result = bridge.duplicates(path: path, perceptual: perceptual)
+            await MainActor.run { [weak self] in
+                self?.dupResult = result
+                self?.isFindingDuplicates = false
+            }
+        }
+    }
+
+    func chooseDuplicateFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            dupFolder = url
+        }
+    }
+
+    // MARK: - Disk map / System Data
+
+    func loadDiskTree(path: String? = nil) {
+        isLoadingDiskTree = true
+        Task.detached { [bridge] in
+            let tree = bridge.diskTree(path: path, depth: 3, maxChildren: 30)
+            await MainActor.run { [weak self] in
+                self?.diskTree = tree
+                self?.isLoadingDiskTree = false
+            }
+        }
+    }
+
+    func drillDown(into node: DiskNode) {
+        guard node.isDir, !node.isOther else { return }
+        if let current = diskTree?.path { diskMapPath.append(current) }
+        loadDiskTree(path: node.path)
+    }
+
+    func drillUp() {
+        guard let previous = diskMapPath.popLast() else { return }
+        loadDiskTree(path: previous)
+    }
+
+    func loadSystemData() {
+        isLoadingSystemData = true
+        Task.detached { [bridge] in
+            let info = bridge.systemData()
+            await MainActor.run { [weak self] in
+                self?.systemData = info
+                self?.isLoadingSystemData = false
+            }
+        }
+    }
+
+    // MARK: - Privacy / purge / schedule
+
+    func cleanPrivacy(caches: Bool, browserCookies: Bool, appCookies: Bool) {
+        Task.detached { [bridge] in
+            let result = bridge.privacyClean(caches: caches, browserCookies: browserCookies, appCookies: appCookies)
+            await MainActor.run { [weak self] in
+                self?.lastActionResult = result
+                self?.showActionResult = true
+                self?.loadPrivacy()
+            }
+        }
+    }
+
+    func purgeStaging(all: Bool) {
+        Task.detached { [bridge] in
+            _ = bridge.purge(all: all)
+            await MainActor.run { [weak self] in
+                self?.loadHistory()
+                self?.loadDiskUsage()
+            }
+        }
+    }
+
+    func loadSchedule() {
+        Task.detached { [bridge] in
+            let info = bridge.scheduleStatus()
+            await MainActor.run { [weak self] in self?.schedule = info }
+        }
+    }
+
+    func installSchedule(profile: String, interval: String) {
+        Task.detached { [bridge] in
+            let error = bridge.installSchedule(profile: profile, interval: interval)
+            let info = bridge.scheduleStatus()
+            await MainActor.run { [weak self] in
+                self?.scheduleError = error
+                self?.schedule = info
+            }
+        }
+    }
+
+    func removeSchedule() {
+        Task.detached { [bridge] in
+            bridge.removeSchedule()
+            let info = bridge.scheduleStatus()
+            await MainActor.run { [weak self] in self?.schedule = info }
+        }
+    }
+
+    /// Space available for "important" use (what Finder shows, including purgeable space).
+    var freeSpaceFormatted: String {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        guard let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+              let bytes = values.volumeAvailableCapacityForImportantUsage else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     func loadApps() {
@@ -262,9 +511,9 @@ class AppViewModel: ObservableObject {
         selectedTab = tab
     }
 
+    /// Asks the core, which probes the TCC database (readable only with Full Disk Access).
     func checkFullDiskAccess() {
-        let safariPath = ("~/Library/Safari" as NSString).expandingTildeInPath
-        self.hasFullDiskAccess = FileManager.default.isReadableFile(atPath: safariPath)
+        self.hasFullDiskAccess = bridge.hasFullDiskAccess()
     }
 
     func openFullDiskAccessSettings() {
@@ -322,8 +571,9 @@ class AppViewModel: ObservableObject {
             }
         }
         
+        // Note: folder bookmarks don't grant Full Disk Access (TidyMac isn't sandboxed);
+        // they're kept only for folders the user picked.
         self.selectedFolders = loadedURLs
-        self.hasFullDiskAccess = !loadedURLs.isEmpty
     }
     
     func startAccessingSecurityScopedResources() {

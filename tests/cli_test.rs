@@ -227,3 +227,46 @@ fn test_no_subcommand_shows_help() {
         .failure()
         .stderr(predicate::str::contains("Usage"));
 }
+
+#[test]
+fn test_map_on_temp_dir() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.bin"), vec![0u8; 8192]).unwrap();
+    tidymac()
+        .args(["map", dir.path().to_str().unwrap(), "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"children\""));
+}
+
+#[test]
+fn test_system_data_json() {
+    tidymac()
+        .args(["system-data", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("entries"));
+}
+
+#[test]
+fn test_apps_orphans_json() {
+    tidymac()
+        .args(["apps", "orphans", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("["));
+}
+
+#[test]
+fn test_schedule_status() {
+    tidymac().args(["schedule", "status"]).assert().success();
+}
+
+#[test]
+fn test_apps_remove_requires_exact_match() {
+    tidymac()
+        .args(["apps", "remove", "a", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("doesn't identify a single app").or(predicate::str::contains("No app found")));
+}

@@ -49,6 +49,24 @@ impl std::fmt::Display for BrowserType {
     }
 }
 
+impl BrowserType {
+    /// Bundle identifier of the browser app (used to detect if it's running).
+    pub fn bundle_id(&self) -> &'static str {
+        match self {
+            BrowserType::Chrome => "com.google.Chrome",
+            BrowserType::ChromeCanary => "com.google.Chrome.canary",
+            BrowserType::Chromium => "org.chromium.Chromium",
+            BrowserType::Brave => "com.brave.Browser",
+            BrowserType::Edge => "com.microsoft.edgemac",
+            BrowserType::Firefox => "org.mozilla.firefox",
+            BrowserType::Safari => "com.apple.Safari",
+            BrowserType::Arc => "company.thebrowser.Browser",
+            BrowserType::Vivaldi => "com.vivaldi.Vivaldi",
+            BrowserType::Opera => "com.operasoftware.Opera",
+        }
+    }
+}
+
 /// Chromium-based browser locations relative to ~/Library/Application Support/
 const CHROMIUM_BROWSERS: &[(&str, BrowserType)] = &[
     ("Google/Chrome", BrowserType::Chrome),

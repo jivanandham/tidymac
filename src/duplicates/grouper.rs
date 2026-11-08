@@ -151,7 +151,13 @@ pub fn find_duplicates(config: &DupConfig) -> Result<DupResults> {
 
             // Sort by size descending (largest = suggested keeper)
             members.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
-            let wasted: u64 = members.iter().skip(1).map(|f| f.size_bytes).sum();
+            // APFS clones share blocks: deleting one frees only its private
+            // bytes, so count those instead of the full size.
+            let wasted: u64 = members
+                .iter()
+                .skip(1)
+                .map(|f| crate::common::apfs::reclaimable_bytes(&f.path, f.size_bytes))
+                .sum();
 
             results.exact_groups.push(SimilarGroup {
                 members,
@@ -303,30 +309,41 @@ pub fn find_duplicates(config: &DupConfig) -> Result<DupResults> {
     Ok(results)
 }
 
-/// Collect all files in a directory tree in parallel, filtered by minimum size
+/// Collect all files in a directory tree, filtered by minimum size.
+///
+/// Hidden folders, `node_modules`, `Library` and media libraries are pruned;
+/// other volumes are not entered; hard links to the same inode are kept once
+/// (they aren't duplicates — they *are* the same file).
 fn collect_files_parallel(root: &PathBuf, min_size: u64) -> Vec<PathBuf> {
-    // First, collect entries from the walkdir (single-threaded walk needed for
-    // deterministic ordering), then filter in parallel for speed.
-    let raw: Vec<PathBuf> = WalkDir::new(root)
+    use std::os::unix::fs::MetadataExt;
+    let mut seen_inodes = std::collections::HashSet::new();
+    let raw: Vec<(PathBuf, u64, u64, u64)> = WalkDir::new(root)
         .follow_links(false)
+        .same_file_system(true)
         .into_iter()
         .filter_entry(|e| {
-            let name = e.file_name().to_string_lossy();
-            // Skip hidden dirs, node_modules, .git, Library
-            !name.starts_with('.') && name != "node_modules" && name != "Library"
+            if e.depth() == 0 {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            !(name.starts_with('.')
+                || name == "node_modules"
+                || name == "library"
+                || name.ends_with(".photoslibrary")
+                || name.ends_with(".photolibrary")
+                || name.ends_with(".app"))
         })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
+        .filter_map(|e| {
+            let md = e.metadata().ok()?;
+            Some((e.path().to_path_buf(), md.len(), md.dev(), md.ino()))
+        })
         .collect();
 
-    // Parallel size-filter (metadata syscalls are cheap but many)
-    raw.into_par_iter()
-        .filter(|p| {
-            std::fs::metadata(p)
-                .map(|m| m.len() >= min_size)
-                .unwrap_or(false)
-        })
+    raw.into_iter()
+        .filter(|(_, len, dev, ino)| *len >= min_size && seen_inodes.insert((*dev, *ino)))
+        .map(|(p, _, _, _)| p)
         .collect()
 }
 

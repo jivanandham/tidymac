@@ -1,217 +1,97 @@
+//! Moving entries into the staging area (soft delete) and back (undo).
+
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::manifest::{CleanManifest, ManifestItem};
-use crate::common::config::Config;
 use crate::common::format;
-use crate::scanner::targets::ScanItem;
 
-/// Move files to the staging area for soft-delete with recovery
-pub fn stage_files(
-    items: &[ScanItem],
-    manifest: &mut CleanManifest,
-    show_progress: bool,
-) -> Result<()> {
-    let files_dir = manifest.staging_files_dir();
-    std::fs::create_dir_all(&files_dir).with_context(|| {
-        format!(
-            "Failed to create staging files dir: {}",
-            files_dir.display()
-        )
-    })?;
+/// Error raised when an entry lives on a different volume than the staging
+/// area. Moving it would copy the data onto the startup disk, so we don't.
+#[derive(Debug)]
+pub struct CrossVolume;
 
-    // Count total files for progress bar
-    let total_files: usize = items
-        .iter()
-        .map(|item| {
-            if item.files.is_empty() {
-                1
-            } else {
-                item.files.len()
-            }
-        })
-        .sum();
-
-    let pb = if show_progress {
-        let pb = ProgressBar::new(total_files as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.cyan} [{bar:40.cyan/blue}] {pos}/{len} Staging files... {msg}")
-                .unwrap()
-                .progress_chars("━━░"),
-        );
-        Some(pb)
-    } else {
-        None
-    };
-
-    let mut file_counter: usize = 0;
-
-    for item in items {
-        if item.files.is_empty() {
-            // The item path itself is the target (e.g., a directory)
-            file_counter += 1;
-            let staged_name = format!("{:06}", file_counter);
-            let staged_path = files_dir.join(&staged_name);
-
-            match stage_single_path(&item.path, &staged_path) {
-                Ok(()) => {
-                    manifest.add_item(ManifestItem {
-                        original_path: item.path.clone(),
-                        staged_path: Some(staged_path),
-                        size_bytes: item.size_bytes,
-                        category: item.category.to_string(),
-                        safety: format!("{:?}", item.safety),
-                        is_dir: item.path.is_dir(),
-                        success: true,
-                        error: None,
-                    });
-                }
-                Err(e) => {
-                    let err_msg = format!("Failed to stage '{}': {}", item.path.display(), e);
-                    manifest.add_item(ManifestItem {
-                        original_path: item.path.clone(),
-                        staged_path: None,
-                        size_bytes: item.size_bytes,
-                        category: item.category.to_string(),
-                        safety: format!("{:?}", item.safety),
-                        is_dir: item.path.is_dir(),
-                        success: false,
-                        error: Some(err_msg.clone()),
-                    });
-                    manifest.add_error(err_msg);
-                }
-            }
-
-            if let Some(ref pb) = pb {
-                pb.inc(1);
-            }
-        } else {
-            // Process individual files within the item
-            for file_entry in &item.files {
-                file_counter += 1;
-                let staged_name = format!("{:06}", file_counter);
-                let staged_path = files_dir.join(&staged_name);
-
-                match stage_single_path(&file_entry.path, &staged_path) {
-                    Ok(()) => {
-                        manifest.add_item(ManifestItem {
-                            original_path: file_entry.path.clone(),
-                            staged_path: Some(staged_path),
-                            size_bytes: file_entry.size_bytes,
-                            category: item.category.to_string(),
-                            safety: format!("{:?}", item.safety),
-                            is_dir: file_entry.path.is_dir(),
-                            success: true,
-                            error: None,
-                        });
-                    }
-                    Err(e) => {
-                        let err_msg =
-                            format!("Failed to stage '{}': {}", file_entry.path.display(), e);
-                        manifest.add_item(ManifestItem {
-                            original_path: file_entry.path.clone(),
-                            staged_path: None,
-                            size_bytes: file_entry.size_bytes,
-                            category: item.category.to_string(),
-                            safety: format!("{:?}", item.safety),
-                            is_dir: file_entry.path.is_dir(),
-                            success: false,
-                            error: Some(err_msg.clone()),
-                        });
-                        manifest.add_error(err_msg);
-                    }
-                }
-
-                if let Some(ref pb) = pb {
-                    pb.set_message(format::truncate(&format::format_path(&file_entry.path), 40));
-                    pb.inc(1);
-                }
-            }
-        }
+impl std::fmt::Display for CrossVolume {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "on a different volume than the staging area — use permanent delete")
     }
-
-    if let Some(ref pb) = pb {
-        pb.finish_and_clear();
-    }
-
-    Ok(())
 }
 
-/// Move a single file or directory to the staging area
-fn stage_single_path(original: &Path, staged: &Path) -> Result<()> {
-    if !original.exists() {
+impl std::error::Error for CrossVolume {}
+
+const EXDEV: i32 = 18;
+
+/// Build the staging path for the n-th entry, keeping its original name for readability.
+pub fn staged_path_for(files_dir: &Path, index: usize, original: &Path) -> PathBuf {
+    let base = original
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "item".to_string());
+    files_dir.join(format!("{:06}-{}", index, base))
+}
+
+/// Move a single file or directory into the staging area (same volume only).
+pub fn stage_single_path(original: &Path, staged: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(original).is_err() {
         anyhow::bail!("Path does not exist: {}", original.display());
     }
-
-    // Try rename first (fast, same filesystem)
-    if std::fs::rename(original, staged).is_ok() {
-        return Ok(());
+    if let Some(parent) = staged.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-
-    // Fallback: copy then delete (cross-filesystem)
-    if original.is_dir() {
-        copy_dir_recursive(original, staged)?;
-        std::fs::remove_dir_all(original).with_context(|| {
-            format!(
-                "Staged copy successful but failed to remove original: {}",
-                original.display()
-            )
-        })?;
-    } else {
-        // Ensure parent directory exists
-        if let Some(parent) = staged.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(original, staged)
-            .with_context(|| format!("Failed to copy '{}' to staging", original.display()))?;
-        std::fs::remove_file(original).with_context(|| {
-            format!(
-                "Staged copy successful but failed to remove original: {}",
-                original.display()
-            )
-        })?;
+    match std::fs::rename(original, staged) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(EXDEV) => Err(CrossVolume.into()),
+        Err(e) => Err(anyhow::Error::new(e)
+            .context(format!("Failed to move '{}' to staging", original.display()))),
     }
-
-    Ok(())
 }
 
-/// Recursively copy a directory in parallel using rayon for CPU-bound I/O
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-
-    let entries: Vec<_> = std::fs::read_dir(src)?.filter_map(|e| e.ok()).collect();
-
-    // Use parallel iteration for large directories; fall back gracefully on error
-    let results: Vec<Result<()>> = entries
-        .par_iter()
-        .map(|entry| {
-            let src_path = entry.path();
-            let dst_path = dst.join(entry.file_name());
-            if src_path.is_dir() {
-                copy_dir_recursive(&src_path, &dst_path)
-            } else {
-                std::fs::copy(&src_path, &dst_path)
-                    .with_context(|| {
-                        format!(
-                            "Failed to copy '{}' to '{}'",
-                            src_path.display(),
-                            dst_path.display()
-                        )
-                    })
-                    .map(|_| ())
+/// Make a tree writable by its owner so it can be removed (Go's module cache,
+/// some npm/pnpm installs and app bundles contain read-only folders).
+fn make_owner_writable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_symlink() {
+            continue;
+        }
+        if let Ok(md) = entry.metadata() {
+            let mode = md.permissions().mode();
+            if mode & 0o200 == 0 {
+                let mut perms = md.permissions();
+                perms.set_mode(mode | 0o200);
+                let _ = std::fs::set_permissions(entry.path(), perms);
             }
-        })
-        .collect();
-
-    // Collect all errors and return the first one
-    for result in results {
-        result?;
+        }
     }
+}
 
-    Ok(())
+/// Permanently remove a file, symlink or directory tree. Symlinks are removed,
+/// never followed. Retries once after fixing read-only permissions.
+pub fn remove_tree(path: &Path) -> Result<()> {
+    let md = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return Ok(()), // already gone
+    };
+    let attempt = |p: &Path| -> std::io::Result<()> {
+        if md.is_dir() {
+            std::fs::remove_dir_all(p)
+        } else {
+            std::fs::remove_file(p)
+        }
+    };
+    match attempt(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            make_owner_writable(path);
+            attempt(path).with_context(|| format!("Failed to remove {}", path.display()))
+        }
+        Err(e) => Err(anyhow::Error::new(e).context(format!("Failed to remove {}", path.display()))),
+    }
 }
 
 /// Restore files from staging back to their original locations
@@ -222,10 +102,11 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
         anyhow::bail!("Session '{}' has already been restored", session_id);
     }
 
-    let restorable_items: Vec<&ManifestItem> = manifest
+    let restorable_items: Vec<ManifestItem> = manifest
         .items
         .iter()
         .filter(|i| i.success && i.staged_path.is_some())
+        .cloned()
         .collect();
 
     if restorable_items.is_empty() {
@@ -257,7 +138,6 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
             pb.set_message(format::truncate(&format::format_path(original_path), 40));
         }
 
-        // Ensure parent directory exists for restoration
         if let Some(parent) = original_path.parent() {
             if !parent.exists() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
@@ -274,7 +154,6 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
             }
         }
 
-        // Move from staging back to original location
         match restore_single_path(staged_path, original_path) {
             Ok(()) => {
                 restored_count += 1;
@@ -298,12 +177,10 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
         pb.finish_and_clear();
     }
 
-    // Mark session as restored
     manifest.mark_restored()?;
 
-    // Clean up the now-empty staging session directory
-    let session_dir = Config::staging_dir().join(session_id);
-    let _ = cleanup_empty_dirs(&session_dir);
+    let files_dir = manifest.staging_files_dir();
+    let _ = cleanup_empty_dirs(&files_dir);
 
     Ok(RestoreReport {
         session_id: session_id.to_string(),
@@ -315,38 +192,21 @@ pub fn restore_session(session_id: &str, show_progress: bool) -> Result<RestoreR
 
 /// Move a single file/directory back from staging to original path
 fn restore_single_path(staged: &Path, original: &Path) -> Result<()> {
-    if !staged.exists() {
+    if std::fs::symlink_metadata(staged).is_err() {
         anyhow::bail!("Staged file no longer exists: {}", staged.display());
     }
 
     // Don't overwrite if something already exists at the original path.
-    // Tip: use `tidymac undo --force` (future) to overwrite.
-    if original.exists() {
+    if std::fs::symlink_metadata(original).is_ok() {
         anyhow::bail!(
             "Original path already exists (won't overwrite): {}. \
-             If you want to force-restore, delete the existing file first.",
+             Move the existing item away first, then undo again.",
             original.display()
         );
     }
 
-    // Try rename first
-    if std::fs::rename(staged, original).is_ok() {
-        return Ok(());
-    }
-
-    // Fallback: copy then delete
-    if staged.is_dir() {
-        copy_dir_recursive(staged, original)?;
-        std::fs::remove_dir_all(staged)?;
-    } else {
-        if let Some(parent) = original.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(staged, original)?;
-        std::fs::remove_file(staged)?;
-    }
-
-    Ok(())
+    std::fs::rename(staged, original)
+        .with_context(|| format!("Failed to move '{}' back", staged.display()))
 }
 
 /// Remove empty directories recursively (cleanup after restore)
@@ -355,15 +215,14 @@ fn cleanup_empty_dirs(dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Recurse into subdirectories first
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        if entry.path().is_dir() {
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
             cleanup_empty_dirs(&entry.path())?;
         }
     }
 
-    // If directory is now empty, remove it
     if std::fs::read_dir(dir)?.next().is_none() {
         std::fs::remove_dir(dir)?;
     }

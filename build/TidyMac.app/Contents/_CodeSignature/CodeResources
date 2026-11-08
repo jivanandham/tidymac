@@ -8,6 +8,10 @@
 		<data>
 		mcPhSPTRlA29sdd5uBCwMv3Z5r0=
 		</data>
+		<key>Resources/bin/tidymac</key>
+		<data>
+		trmwG7GTuVMD/QuN5PdPr0b4ulE=
+		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -15,16 +19,23 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			eHjr7p10gPCOJ0HLdknfDqIlnpE=
+			9p586DXT7hgMKm5fLT4eQRweLeE=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"7878ebee9d7480f08e2741cb7649df0ea2259e91"</string>
+			<string>identifier libtidymac and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: jivakeerthana@gmail.com (PU52ND9LHN)" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */</string>
 		</dict>
 		<key>Resources/AppIcon.icns</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			YGpSDLqlTrKFb3Xx94GwcndPMJTJSLkPrhQjbs+FiXY=
+			</data>
+		</dict>
+		<key>Resources/bin/tidymac</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			CNawLkhOOw3Car10fOQDMLn5YuaDVFilrd5yo08rS1s=
 			</data>
 		</dict>
 	</dict>

@@ -2,22 +2,27 @@ pub mod cache;
 pub mod dev_detector;
 pub mod docker;
 pub mod targets;
+pub mod tools;
 pub mod walker;
 
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::time::Instant;
 
 use cache::ScanCache;
 use targets::{ScanResults, ScanTarget};
 
-/// Main scan orchestrator - runs all targets and collects results
+/// Main scan orchestrator (fresh scan, no cache). Results can be cleaned.
+///
+/// `large_file_threshold`: `Some(bytes)` to include a review-only list of large
+/// files in your home folder, `None` to skip that (slow) walk entirely.
 pub fn run_scan(
     targets: &[ScanTarget],
     show_progress: bool,
     include_dev_projects: bool,
     stale_days: u32,
-    large_file_threshold: u64,
+    large_file_threshold: Option<u64>,
 ) -> Result<ScanResults> {
     run_scan_with_cache(
         targets,
@@ -25,34 +30,34 @@ pub fn run_scan(
         include_dev_projects,
         stale_days,
         large_file_threshold,
-        true,
+        false,
         "quick",
     )
 }
 
-/// Main scan with cache control
+/// Main scan with cache control.
+///
+/// Items served from the cache carry only totals (no entry list) and are
+/// marked `from_cache`; they are for display and are never cleaned.
 pub fn run_scan_with_cache(
     targets: &[ScanTarget],
     show_progress: bool,
     include_dev_projects: bool,
     stale_days: u32,
-    large_file_threshold: u64,
+    large_file_threshold: Option<u64>,
     use_cache: bool,
     profile_name: &str,
 ) -> Result<ScanResults> {
     let start = Instant::now();
     let mut results = ScanResults::new();
 
-    // Load or create cache
     let mut scan_cache = if use_cache {
         ScanCache::load(profile_name).unwrap_or_else(|| ScanCache::new(profile_name))
     } else {
         ScanCache::new(profile_name)
     };
 
-    // Set up progress bar
-    let total_steps = targets.len() + if include_dev_projects { 2 } else { 0 } + 1;
-
+    let total_steps = 1 + if include_dev_projects { 2 } else { 0 } + large_file_threshold.map(|_| 1).unwrap_or(0);
     let pb = if show_progress {
         let pb = ProgressBar::new(total_steps as u64);
         pb.set_style(
@@ -66,87 +71,95 @@ pub fn run_scan_with_cache(
         None
     };
 
-    // 1. Scan all defined targets (with cache)
     if let Some(ref pb) = pb {
-        pb.set_message("Scanning system locations...");
+        pb.set_message("Scanning caches, logs and developer folders...");
     }
 
-    if use_cache {
-        // Check cache for each target individually
-        let mut uncached_targets = Vec::new();
-
-        for target in targets {
-            let expanded = walker::expand_paths(&target.paths);
-            let mut all_cached = true;
-            let mut cached_items = Vec::new();
-
-            for path in &expanded {
-                if let Some(cached) = scan_cache.check(path) {
-                    // Store cached result temporarily
-                    if cached.size_bytes > 0 {
-                        cached_items.push(targets::ScanItem {
-                            name: cached.name.clone(),
-                            category: target.category.clone(),
-                            path: cached.path.clone(),
-                            size_bytes: cached.size_bytes,
-                            file_count: cached.file_count,
-                            safety: target.safety.clone(),
-                            reason: cached.reason.clone(),
-                            files: Vec::new(), // Cached results don't store individual files
-                        });
-                    }
-                } else {
-                    all_cached = false;
-                }
-            }
-
-            if all_cached {
-                // Only add cached results if target is fully cached
-                results.items.extend(cached_items);
-            } else {
-                uncached_targets.push(target.clone());
-            }
+    // Every target's roots are "claimed": another target never counts them again.
+    let mut claimed: Vec<String> = Vec::new();
+    for t in crate::scanner::targets::all_targets().iter().chain(targets.iter()) {
+        for r in walker::expand_paths(&t.paths) {
+            claimed.push(r.to_string_lossy().to_lowercase());
         }
+    }
+    claimed.sort();
+    claimed.dedup();
 
-        // Only scan uncached targets
-        if !uncached_targets.is_empty() {
-            let scan_results = walker::walk_targets(&uncached_targets);
-            for result in scan_results {
-                match result {
-                    Ok(item) => {
-                        scan_cache.store(&item);
-                        if item.size_bytes > 0 {
-                            results.items.push(item);
+    let ctx = walker::WalkContext {
+        claimed_roots: claimed,
+        config: crate::common::config::Config::load().ok(),
+        links: walker::LinkTracker::default(),
+    };
+
+    // 1. Targets (cache hits first)
+    let mut to_scan: Vec<&ScanTarget> = Vec::new();
+    for target in targets {
+        if use_cache && target.tool_action.is_none() {
+            let expanded = walker::expand_paths(&target.paths);
+            let mut cached_items = Vec::new();
+            let mut all_cached = !expanded.is_empty();
+            for path in &expanded {
+                match scan_cache.check(path) {
+                    Some(c) => {
+                        if c.size_bytes > 0 {
+                            cached_items.push(targets::ScanItem {
+                                name: target.name.clone(),
+                                category: target.category.clone(),
+                                path: c.path.clone(),
+                                size_bytes: c.size_bytes,
+                                reclaimable_bytes: c.size_bytes,
+                                file_count: c.file_count,
+                                safety: target.safety.clone(),
+                                reason: c.reason.clone(),
+                                roots: expanded.clone(),
+                                policy: target.policy,
+                                from_cache: true,
+                                ..Default::default()
+                            });
                         }
                     }
-                    Err(e) => results.errors.push(format!("Scan error: {}", e)),
+                    None => all_cached = false,
                 }
             }
-        }
-    } else {
-        // No cache — scan everything
-        let scan_results = walker::walk_targets(targets);
-        for result in scan_results {
-            match result {
-                Ok(item) => {
-                    scan_cache.store(&item);
-                    if item.size_bytes > 0 {
-                        results.items.push(item);
-                    }
-                }
-                Err(e) => results.errors.push(format!("Scan error: {}", e)),
+            if all_cached {
+                results.items.extend(cached_items);
+                continue;
             }
         }
+        to_scan.push(target);
     }
 
+    let scanned: Vec<targets::ScanItem> = to_scan
+        .par_iter()
+        .filter_map(|t| {
+            let mut item = walker::walk_target_with(t, &ctx);
+            if item.tool_action.is_some() && !tools::estimate(&mut item) {
+                return None;
+            }
+            Some(item)
+        })
+        .collect();
+
+    for item in scanned {
+        if use_cache && item.tool_action.is_none() {
+            scan_cache.store(&item);
+        }
+        if item.size_bytes > 0 {
+            results.items.push(item);
+        }
+    }
     if let Some(ref pb) = pb {
-        pb.set_position(targets.len() as u64);
+        pb.inc(1);
     }
 
-    // 2. Scan for stale node_modules and venvs
+    if walker::cancelled() {
+        anyhow::bail!("Scan cancelled");
+    }
+
+    // 2. Stale node_modules and venvs
     if include_dev_projects {
         if let Some(ref pb) = pb {
-            pb.set_message("Scanning for stale node_modules...");
+            pb.set_message("Looking for stale node_modules...");
         }
         let nm_item = dev_detector::scan_node_modules(stale_days);
         if nm_item.size_bytes > 0 {
@@ -154,7 +167,7 @@ pub fn run_scan_with_cache(
         }
         if let Some(ref pb) = pb {
             pb.inc(1);
-            pb.set_message("Scanning for stale Python venvs...");
+            pb.set_message("Looking for stale Python venvs...");
         }
         let venv_item = dev_detector::scan_venvs(stale_days);
         if venv_item.size_bytes > 0 {
@@ -165,57 +178,50 @@ pub fn run_scan_with_cache(
         }
     }
 
-    // 3. Scan for large files
-    if let Some(ref pb) = pb {
-        pb.set_message("Scanning for large files...");
-    }
-    let home = dirs::home_dir().unwrap_or_default();
-    let large_files = walker::find_large_files(&home, large_file_threshold);
-    if !large_files.is_empty() {
-        let total_size: u64 = large_files.iter().map(|f| f.size_bytes).sum();
-        let count = large_files.len();
-        results.items.push(targets::ScanItem {
-            name: format!(
-                "Large files (>{})",
-                crate::common::format::format_size(large_file_threshold)
-            ),
-            category: targets::Category::LargeFile,
-            path: home,
-            size_bytes: total_size,
-            file_count: count,
-            safety: targets::SafetyLevel::Caution,
-            reason: "Large files that may no longer be needed".into(),
-            files: large_files,
-        });
-    }
-    if let Some(ref pb) = pb {
-        pb.inc(1);
+    // 3. Large files — only when the profile asks for them, and review-only.
+    if let Some(threshold) = large_file_threshold {
+        if let Some(ref pb) = pb {
+            pb.set_message("Looking for large files...");
+        }
+        let home = dirs::home_dir().unwrap_or_default();
+        let large_files = walker::find_large_files(&home, threshold);
+        if !large_files.is_empty() {
+            let total_size: u64 = large_files.iter().map(|f| f.size_bytes).sum();
+            results.items.push(targets::ScanItem {
+                name: format!(
+                    "Large files (>{})",
+                    crate::common::format::format_size(threshold)
+                ),
+                category: targets::Category::LargeFile,
+                path: home.clone(),
+                size_bytes: total_size,
+                reclaimable_bytes: total_size,
+                file_count: large_files.len(),
+                safety: targets::SafetyLevel::Caution,
+                reason: "Large personal files — review and remove individually".into(),
+                files: large_files,
+                roots: vec![home],
+                review_only: true,
+                policy: crate::common::safety::DeletePolicy::UserFile,
+                ..Default::default()
+            });
+        }
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
     }
 
-    // Sort by size descending
-    results
-        .items
-        .sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    if walker::cancelled() {
+        anyhow::bail!("Scan cancelled");
+    }
 
-    // Calculate totals
+    results.items.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
     results.recalculate();
     results.duration_secs = start.elapsed().as_secs_f64();
 
-    // Save cache
     if use_cache {
         if let Err(e) = scan_cache.save() {
             results.errors.push(format!("Cache save warning: {}", e));
-        }
-
-        // Add cache stats to results
-        if show_progress && (scan_cache.stats.hits > 0 || scan_cache.stats.misses > 0) {
-            results.errors.push(format!(
-                "Cache: {} hits, {} misses, {} invalidated ({:.0}% hit rate)",
-                scan_cache.stats.hits,
-                scan_cache.stats.misses,
-                scan_cache.stats.invalidated,
-                scan_cache.stats.hit_rate()
-            ));
         }
     }
 

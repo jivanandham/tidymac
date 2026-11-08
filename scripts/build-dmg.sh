@@ -28,8 +28,8 @@ cd "$PROJECT_DIR"
 IS_UNIVERSAL=false
 if command -v cargo >/dev/null 2>&1; then
     # Build for current architecture
-    echo "   Building native $(uname -m)..."
-    cargo build --release --lib
+    echo "   Building native $(uname -m) (library + CLI)..."
+    cargo build --release
 
     OTHER_ARCH=""
     if [ "$(uname -m)" == "arm64" ]; then
@@ -39,18 +39,24 @@ if command -v cargo >/dev/null 2>&1; then
     fi
 
     echo "   Attempting universal build (trying $OTHER_ARCH)..."
-    if cargo build --release --lib --target "$OTHER_ARCH" 2>/dev/null; then
-        echo "   Creating universal dylib with lipo..."
+    if cargo build --release --target "$OTHER_ARCH" 2>/dev/null; then
+        echo "   Creating universal dylib and CLI with lipo..."
         mkdir -p "$PROJECT_DIR/target/universal"
         lipo -create \
             "$PROJECT_DIR/target/release/libtidymac.dylib" \
             "$PROJECT_DIR/target/$OTHER_ARCH/release/libtidymac.dylib" \
             -output "$PROJECT_DIR/target/universal/libtidymac.dylib"
+        lipo -create \
+            "$PROJECT_DIR/target/release/tidymac" \
+            "$PROJECT_DIR/target/$OTHER_ARCH/release/tidymac" \
+            -output "$PROJECT_DIR/target/universal/tidymac"
         DYLIB_SRC="$PROJECT_DIR/target/universal/libtidymac.dylib"
+        CLI_SRC="$PROJECT_DIR/target/universal/tidymac"
         IS_UNIVERSAL=true
     else
         echo "   ⚠️  Could not build for $OTHER_ARCH. Defaulting to native build."
         DYLIB_SRC="$PROJECT_DIR/target/release/libtidymac.dylib"
+        CLI_SRC="$PROJECT_DIR/target/release/tidymac"
         IS_UNIVERSAL=false
     fi
 else
@@ -71,8 +77,9 @@ if [ ! -f "$DYLIB_SRC" ]; then
 fi
 echo "   ✅ Rust dylib ready"
 
-# Copy to Libraries for SPM build
+# Copy to Libraries for SPM build (install name @rpath so the app finds it in Frameworks)
 cp "$DYLIB_SRC" "$APP_DIR/Libraries/libtidymac.dylib"
+install_name_tool -id "@rpath/libtidymac.dylib" "$APP_DIR/Libraries/libtidymac.dylib"
 cp "$PROJECT_DIR/ffi/tidymac.h" "$APP_DIR/Libraries/tidymac.h"
 
 # ─── Step 2: Build Swift app ──────────────────────────────────
@@ -128,6 +135,12 @@ cp "$APP_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
 # Copy dylib into Frameworks
 cp "$DYLIB_SRC" "$APP_BUNDLE/Contents/Frameworks/libtidymac.dylib"
+
+# Bundle the CLI (used by scheduled reports: Contents/Resources/bin/tidymac)
+if [ -n "${CLI_SRC:-}" ] && [ -f "$CLI_SRC" ]; then
+    mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
+    cp "$CLI_SRC" "$APP_BUNDLE/Contents/Resources/bin/tidymac"
+fi
 
 # Fix the dylib's install name so it can be found via @rpath
 install_name_tool -id "@rpath/libtidymac.dylib" "$APP_BUNDLE/Contents/Frameworks/libtidymac.dylib"
@@ -219,24 +232,52 @@ echo "   ✅ App bundle assembled"
 # ─── Step 4: Sign ─────────────────────────────────────────────
 echo "🔏 Step 4: Code signing..."
 
-SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+# Use CODESIGN_IDENTITY if set; otherwise pick a real certificate from the
+# keychain (Developer ID for distribution, Apple Development for personal use).
+# A stable identity matters: macOS ties Full Disk Access to the signature, so
+# an ad-hoc signed build loses its permission every time you rebuild.
+SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ]; then
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Developer ID Application" | sed -E 's/.*"(.*)"/\1/' || true)
+fi
+if [ -z "$SIGN_IDENTITY" ]; then
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Apple Development" | sed -E 's/.*"(.*)"/\1/' || true)
+fi
+TIMESTAMP_FLAG="--timestamp"
+if [ -z "$SIGN_IDENTITY" ]; then
+    SIGN_IDENTITY="-"
+    TIMESTAMP_FLAG=""
+    echo ""
+    echo "   ⚠️  No signing certificate found — using an ad-hoc signature."
+    echo "   ⚠️  Full Disk Access will have to be re-granted after every rebuild."
+    echo "   ⚠️  Fix: Xcode > Settings > Accounts > add your Apple ID > Manage Certificates > +"
+    echo "       (a free 'Apple Development' certificate is enough for personal use)."
+    echo ""
+fi
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    TIMESTAMP_FLAG=""
+fi
+echo "   Identity: $SIGN_IDENTITY"
 
-# Strip existing Rust ad-hoc signature from dylib before re-signing
 codesign --remove-signature "$APP_BUNDLE/Contents/Frameworks/libtidymac.dylib" 2>/dev/null || true
 
-# Sign dylib
 echo "   Signing dylib..."
-codesign --force --sign "$SIGN_IDENTITY" --timestamp "$APP_BUNDLE/Contents/Frameworks/libtidymac.dylib"
+codesign --force --sign "$SIGN_IDENTITY" $TIMESTAMP_FLAG --options runtime \
+    "$APP_BUNDLE/Contents/Frameworks/libtidymac.dylib"
 
-# Sign app bundle
+if [ -f "$APP_BUNDLE/Contents/Resources/bin/tidymac" ]; then
+    echo "   Signing bundled CLI..."
+    codesign --force --sign "$SIGN_IDENTITY" $TIMESTAMP_FLAG --options runtime \
+        --identifier "com.jeeva.TidyMac.cli" \
+        "$APP_BUNDLE/Contents/Resources/bin/tidymac"
+fi
+
 echo "   Signing app bundle..."
-codesign --force --sign "$SIGN_IDENTITY" \
+codesign --force --sign "$SIGN_IDENTITY" $TIMESTAMP_FLAG \
     --entitlements "$APP_DIR/TidyMac.entitlements" \
     --options runtime \
-    --timestamp \
     "$APP_BUNDLE"
 
-# Verify
 echo "   Verifying signatures..."
 codesign --verify --deep --strict "$APP_BUNDLE"
 echo "   ✅ Code signed and verified"
@@ -259,6 +300,17 @@ hdiutil create \
     "$DMG_OUTPUT"
 
 rm -rf "$DMG_DIR"
+
+# ─── Step 6 (optional): Notarize ────────────────────────────────
+# Requires a Developer ID certificate and a stored notarytool profile:
+#   xcrun notarytool store-credentials tidymac --apple-id … --team-id …
+if [ -n "${NOTARY_PROFILE:-}" ] && [ "$SIGN_IDENTITY" != "-" ]; then
+    echo "📨 Step 6: Notarizing..."
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG_OUTPUT"
+    xcrun notarytool submit "$DMG_OUTPUT" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$DMG_OUTPUT"
+    echo "   ✅ Notarized and stapled"
+fi
 
 echo ""
 echo "========================================="

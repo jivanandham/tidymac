@@ -10,6 +10,88 @@ pub struct Profile {
     pub targets: ProfileTargets,
     #[serde(default)]
     pub thresholds: ProfileThresholds,
+    /// User-defined cleanup rules (`[[rules]]` tables).
+    #[serde(default)]
+    pub rules: Vec<CustomRule>,
+}
+
+/// A user-defined cleanup rule.
+///
+/// ```toml
+/// [[rules]]
+/// name = "Old screen recordings"
+/// paths = ["~/Movies/Screen Recordings"]
+/// min_age_days = 60
+/// min_size_mb = 50
+/// extensions = ["mov", "mp4"]
+/// safety = "caution"
+/// ```
+///
+/// Each direct child of each path is one entry (the folder itself is never
+/// removed). Rules are still subject to the safety guard: folders such as
+/// ~/Documents or ~/Library/Application Support stay protected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomRule {
+    pub name: String,
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub min_age_days: Option<u32>,
+    #[serde(default)]
+    pub min_size_mb: Option<u64>,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// `false` = only loose files directly inside the paths.
+    #[serde(default = "default_true")]
+    pub include_folders: bool,
+    #[serde(default)]
+    pub safety: Option<targets::SafetyLevel>,
+}
+
+impl CustomRule {
+    /// Problems with the rule (empty if valid).
+    pub fn validate(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.name.trim().is_empty() {
+            problems.push("rule has no name".to_string());
+        }
+        if self.paths.is_empty() {
+            problems.push(format!("rule '{}' has no paths", self.name));
+        }
+        let home = dirs::home_dir().unwrap_or_default();
+        for raw in &self.paths {
+            if !(raw.starts_with("~/") || raw.starts_with(&*home.to_string_lossy())) {
+                problems.push(format!("rule '{}': path '{}' must be inside your home folder", self.name, raw));
+            }
+            if raw.split('/').any(|c| c == "..") {
+                problems.push(format!("rule '{}': path '{}' may not contain '..'", self.name, raw));
+            }
+        }
+        problems
+    }
+
+    /// Convert to a scan target.
+    pub fn to_target(&self) -> ScanTarget {
+        ScanTarget {
+            name: self.name.clone(),
+            category: targets::Category::UserCache,
+            paths: self.paths.clone(),
+            safety: self.safety.clone().unwrap_or(targets::SafetyLevel::Caution),
+            reason: self
+                .reason
+                .clone()
+                .unwrap_or_else(|| "Custom rule".to_string()),
+            recursive: self.include_folders,
+            min_age_days: self.min_age_days,
+            min_size_bytes: self.min_size_mb.map(|mb| mb * 1024 * 1024),
+            exclude: self.exclude.clone(),
+            extensions: self.extensions.iter().map(|e| e.trim_start_matches('.').to_lowercase()).collect(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +163,20 @@ pub struct DevTargets {
     pub gradle_cache: bool,
     #[serde(default)]
     pub conda_cache: bool,
+    #[serde(default)]
+    pub go_cache: bool,
+    #[serde(default)]
+    pub maven_cache: bool,
+    #[serde(default)]
+    pub pnpm_store: bool,
+    #[serde(default)]
+    pub ruby_gems_cache: bool,
+    #[serde(default)]
+    pub terraform_cache: bool,
+    #[serde(default)]
+    pub jvm_caches: bool,
+    #[serde(default)]
+    pub xcode_device_support: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,12 +235,35 @@ impl Profile {
         self.targets.dev.node_modules_stale || self.targets.dev.venv
     }
 
-    /// Get the list of scan targets enabled by this profile
+    /// Get the list of scan targets enabled by this profile (incl. valid custom rules).
     pub fn enabled_targets(&self) -> Vec<ScanTarget> {
         let all = targets::all_targets();
-        all.into_iter()
-            .filter(|t| self.is_target_enabled(t))
-            .collect()
+        let mut enabled: Vec<ScanTarget> = all.into_iter().filter(|t| self.is_target_enabled(t)).collect();
+        for rule in &self.rules {
+            let problems = rule.validate();
+            if problems.is_empty() {
+                enabled.push(rule.to_target());
+            } else {
+                for p in problems {
+                    tracing::warn!("Ignoring custom rule: {}", p);
+                }
+            }
+        }
+        enabled
+    }
+
+    /// Problems in this profile's custom rules.
+    pub fn rule_problems(&self) -> Vec<String> {
+        self.rules.iter().flat_map(|r| r.validate()).collect()
+    }
+
+    /// Large-file threshold in bytes if this profile lists large files.
+    pub fn large_file_threshold(&self) -> Option<u64> {
+        if self.targets.large_files {
+            Some(self.thresholds.large_file_mb.max(1) * 1024 * 1024)
+        } else {
+            None
+        }
     }
 
     fn is_target_enabled(&self, target: &ScanTarget) -> bool {
@@ -167,7 +286,7 @@ impl Profile {
     fn is_dev_tool_enabled(&self, tool: &targets::DevTool) -> bool {
         use targets::DevTool::*;
         match tool {
-            Xcode => self.targets.dev.xcode_derived_data,
+            Xcode => self.targets.dev.xcode_derived_data || self.targets.dev.xcode_device_support,
             XcodeArchives => self.targets.dev.xcode_archives,
             XcodeSimulators => self.targets.dev.ios_simulators,
             Docker => self.targets.dev.docker_dangling,
@@ -181,6 +300,13 @@ impl Profile {
             CocoaPods => self.targets.dev.cocoapods_cache,
             Cargo => self.targets.dev.cargo_cache,
             Gradle => self.targets.dev.gradle_cache,
+            Go => self.targets.dev.go_cache,
+            Maven => self.targets.dev.maven_cache,
+            Pnpm => self.targets.dev.pnpm_store,
+            YarnBerry => self.targets.dev.yarn_cache,
+            RubyGems => self.targets.dev.ruby_gems_cache,
+            Terraform => self.targets.dev.terraform_cache,
+            Ivy2 | Sbt => self.targets.dev.jvm_caches,
             _ => false,
         }
     }
@@ -231,6 +357,7 @@ fn builtin_profile(name: &str) -> Option<Profile> {
                 large_files: false,
                 dev: DevTargets::default(),
             },
+            rules: Vec::new(),
             thresholds: ProfileThresholds {
                 stale_days: 30,
                 large_file_mb: 500,
@@ -269,8 +396,13 @@ fn builtin_profile(name: &str) -> Option<Profile> {
                     cargo_cache: true,
                     gradle_cache: true,
                     conda_cache: true,
+                    go_cache: true,
+                    pnpm_store: true,
+                    xcode_device_support: true,
+                    ..Default::default()
                 },
             },
+            rules: Vec::new(),
             thresholds: ProfileThresholds {
                 stale_days: 30,
                 large_file_mb: 500,
@@ -296,6 +428,7 @@ fn builtin_profile(name: &str) -> Option<Profile> {
                 large_files: false,
                 dev: DevTargets::default(),
             },
+            rules: Vec::new(),
             thresholds: ProfileThresholds {
                 stale_days: 14,
                 large_file_mb: 200,
@@ -334,8 +467,16 @@ fn builtin_profile(name: &str) -> Option<Profile> {
                     cargo_cache: true,
                     gradle_cache: true,
                     conda_cache: true,
+                    go_cache: true,
+                    pnpm_store: true,
+                    xcode_device_support: true,
+                    maven_cache: true,
+                    ruby_gems_cache: true,
+                    terraform_cache: true,
+                    jvm_caches: true,
                 },
             },
+            rules: Vec::new(),
             thresholds: ProfileThresholds {
                 stale_days: 14,
                 large_file_mb: 100,

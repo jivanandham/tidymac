@@ -382,6 +382,7 @@ fn test_scan_results_recalculate() {
         safety: targets::SafetyLevel::Safe,
         reason: "test".to_string(),
         files: Vec::new(),
+        ..Default::default()
     });
 
     results.items.push(targets::ScanItem {
@@ -393,6 +394,7 @@ fn test_scan_results_recalculate() {
         safety: targets::SafetyLevel::Caution,
         reason: "test".to_string(),
         files: Vec::new(),
+        ..Default::default()
     });
 
     results.recalculate();
@@ -414,6 +416,7 @@ fn test_scan_results_filter_by_safety() {
         safety: targets::SafetyLevel::Safe,
         reason: "test".to_string(),
         files: Vec::new(),
+        ..Default::default()
     });
 
     results.items.push(targets::ScanItem {
@@ -425,6 +428,7 @@ fn test_scan_results_filter_by_safety() {
         safety: targets::SafetyLevel::Caution,
         reason: "test".to_string(),
         files: Vec::new(),
+        ..Default::default()
     });
 
     let safe = results.filter_by_safety(&targets::SafetyLevel::Safe);

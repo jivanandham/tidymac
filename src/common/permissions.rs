@@ -1,16 +1,17 @@
 use std::path::Path;
 
-/// Known SIP-protected paths that cannot be modified
+/// Paths protected by System Integrity Protection (read-only system volume and
+/// SIP-restricted locations). `/usr/local` is *not* SIP-protected.
 const SIP_PATHS: &[&str] = &[
     "/System",
     "/usr",
     "/bin",
     "/sbin",
-    "/var",
+    "/private/var/db",
     "/Applications/Utilities",
 ];
 
-/// Paths requiring Full Disk Access
+/// Paths that macOS privacy controls (TCC) only open to apps with Full Disk Access.
 const FDA_PATHS: &[&str] = &[
     "Library/Mail",
     "Library/Messages",
@@ -21,18 +22,33 @@ const FDA_PATHS: &[&str] = &[
     "Library/Metadata/CoreSpotlight",
     "Library/PersonalizationPortrait",
     "Library/Suggestions",
+    "Library/Containers/com.apple.mail",
 ];
 
-/// Check if a path is SIP-protected
-pub fn is_sip_protected(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
-    SIP_PATHS.iter().any(|p| path_str.starts_with(p))
+fn has_prefix(path_str: &str, prefix: &str) -> bool {
+    path_str == prefix || path_str.starts_with(&format!("{}/", prefix))
 }
 
-/// Check if a path likely requires Full Disk Access
+/// Check if a path is SIP-protected.
+pub fn is_sip_protected(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    if has_prefix(&path_str, "/usr/local") {
+        return false;
+    }
+    SIP_PATHS.iter().any(|p| has_prefix(&path_str, p))
+}
+
+/// Check if a path likely requires Full Disk Access.
 pub fn requires_full_disk_access(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
     FDA_PATHS.iter().any(|p| path_str.contains(p))
+}
+
+/// True for app sandbox containers, which macOS protects with its app-data
+/// privacy controls (TCC "App Management / App Data"), *not* SIP.
+pub fn is_app_container(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    s.contains("/Library/Containers/") || s.contains("/Library/Group Containers/")
 }
 
 /// Check if we can read a path
@@ -43,7 +59,6 @@ pub fn can_read(path: &Path) -> bool {
 /// Check if we can write to a path
 pub fn can_write(path: &Path) -> bool {
     if let Some(parent) = path.parent() {
-        // Try to check write permission on parent directory
         std::fs::metadata(parent)
             .map(|m| !m.permissions().readonly())
             .unwrap_or(false)
@@ -57,6 +72,10 @@ pub fn permission_hint(path: &Path) -> String {
     if is_sip_protected(path) {
         "This path is protected by System Integrity Protection (SIP) and cannot be modified."
             .to_string()
+    } else if is_app_container(path) {
+        "This is an app's sandbox container. macOS privacy controls block access to other apps' data \
+         unless TidyMac has Full Disk Access (System Settings > Privacy & Security > Full Disk Access)."
+            .to_string()
     } else if requires_full_disk_access(path) {
         "This path requires Full Disk Access. Grant it in System Settings > Privacy & Security > Full Disk Access."
             .to_string()
@@ -68,15 +87,24 @@ pub fn permission_hint(path: &Path) -> String {
     }
 }
 
-/// Check if the current process has Full Disk Access
-/// This is a heuristic — we try to read a known FDA-protected path
+/// Whether the current process has Full Disk Access.
+///
+/// The system TCC database always exists and can only be opened by processes
+/// with Full Disk Access, so it is a reliable probe. If it can't be found, fall
+/// back to user folders that are TCC-protected and almost always present.
 pub fn has_full_disk_access() -> bool {
+    let system_tcc = Path::new("/Library/Application Support/com.apple.TCC/TCC.db");
+    if system_tcc.exists() {
+        return std::fs::File::open(system_tcc).is_ok();
+    }
     if let Some(home) = dirs::home_dir() {
-        let test_path = home.join("Library/Mail");
-        if test_path.exists() {
-            return std::fs::read_dir(&test_path).is_ok();
+        for probe in ["Library/Safari", "Library/Mail", "Library/Messages"] {
+            let p = home.join(probe);
+            if p.exists() {
+                return std::fs::read_dir(&p).is_ok();
+            }
         }
     }
-    // If Mail folder doesn't exist, we can't test — assume yes
-    true
+    // Nothing to probe: report "no" so the UI keeps nudging the user.
+    false
 }

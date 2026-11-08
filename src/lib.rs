@@ -11,7 +11,7 @@
 //! - **Perceptual Duplicate Detection**: Find visually similar images
 //! - **CLI as Unix Citizen**: JSON output, pipe-friendly, cron-schedulable
 //! - **Privacy Dashboard**: Audit browser cookies, tracking data, local databases
-//! - **100% Offline**: Zero telemetry, no accounts, no cloud
+//! - **100% Offline**: no network code, no telemetry, no accounts
 
 pub mod apps;
 pub mod cleaner;
@@ -22,5 +22,6 @@ pub mod ffi;
 pub mod privacy;
 pub mod profiles;
 pub mod scanner;
+pub mod schedule;
 pub mod startup;
 pub mod viz;

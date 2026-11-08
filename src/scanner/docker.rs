@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Check if Docker is installed
 pub fn is_docker_installed() -> bool {
-    std::process::Command::new("docker")
+    crate::common::sys::tool_command("docker")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -12,7 +12,7 @@ pub fn is_docker_installed() -> bool {
 
 /// Check if Docker daemon is running
 pub fn is_docker_running() -> bool {
-    std::process::Command::new("docker")
+    crate::common::sys::tool_command("docker")
         .args(["info", "--format", "{{.ServerVersion}}"])
         .output()
         .map(|o| o.status.success())
@@ -116,7 +116,7 @@ fn get_image_info() -> DockerCategory {
     let mut cat = DockerCategory::empty("Images");
 
     // List all images
-    let output = std::process::Command::new("docker")
+    let output = crate::common::sys::tool_command("docker")
         .args([
             "images",
             "--format",
@@ -147,7 +147,7 @@ fn get_image_info() -> DockerCategory {
     cat.size = parse_docker_df_size("Images");
 
     // Dangling images are reclaimable
-    let dangling_count = std::process::Command::new("docker")
+    let dangling_count = crate::common::sys::tool_command("docker")
         .args(["images", "-f", "dangling=true", "-q"])
         .output()
         .map(|o| {
@@ -170,7 +170,7 @@ fn get_image_info() -> DockerCategory {
 fn get_container_info() -> DockerCategory {
     let mut cat = DockerCategory::empty("Containers");
 
-    let output = std::process::Command::new("docker")
+    let output = crate::common::sys::tool_command("docker")
         .args([
             "ps",
             "-a",
@@ -217,7 +217,7 @@ fn get_container_info() -> DockerCategory {
 fn get_volume_info() -> DockerCategory {
     let mut cat = DockerCategory::empty("Volumes");
 
-    let output = std::process::Command::new("docker")
+    let output = crate::common::sys::tool_command("docker")
         .args(["volume", "ls", "--format", "{{.Name}}\t{{.Driver}}"])
         .output();
 
@@ -242,7 +242,7 @@ fn get_volume_info() -> DockerCategory {
 
     cat.size = parse_docker_df_size("Local Volumes");
     // Dangling volumes are reclaimable
-    let dangling = std::process::Command::new("docker")
+    let dangling = crate::common::sys::tool_command("docker")
         .args(["volume", "ls", "-f", "dangling=true", "-q"])
         .output()
         .map(|o| {
@@ -270,7 +270,7 @@ fn get_build_cache_info() -> DockerCategory {
 
 /// Parse size from `docker system df` output for a specific type
 fn parse_docker_df_size(type_name: &str) -> u64 {
-    let output = std::process::Command::new("docker")
+    let output = crate::common::sys::tool_command("docker")
         .args([
             "system",
             "df",
@@ -412,7 +412,7 @@ pub fn prune_dangling(dry_run: bool) -> Result<DockerPruneReport> {
 
 /// Run a docker command and return stdout
 fn run_docker_command(args: &[&str]) -> Result<String> {
-    let output = std::process::Command::new("docker")
+    let output = crate::common::sys::tool_command("docker")
         .args(args)
         .output()
         .context("Failed to run docker command")?;

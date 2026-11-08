@@ -45,6 +45,16 @@ struct ScanView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
+            if let error = viewModel.scanError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(TidyTheme.amber)
+                    Text(error).font(.callout)
+                    Spacer()
+                }
+                .padding(10)
+                .background(TidyTheme.amber.opacity(0.08))
+            }
+
             if viewModel.isScanning {
                 Spacer()
                 ScanningAnimation(profile: viewModel.selectedProfile) {
@@ -65,18 +75,32 @@ struct ScanView: View {
         }
         .alert("Confirm Clean", isPresented: $viewModel.showCleanConfirm) {
             Button("Cancel", role: .cancel) {}
-            Button("Soft Delete (Recoverable)") {
+            Button("Move to Undo Area (Recoverable)") {
                 viewModel.runClean(mode: "soft")
             }
-            Button("Permanent Delete", role: .destructive) {
+            Button("Delete Permanently", role: .destructive) {
                 viewModel.runClean(mode: "hard")
             }
         } message: {
-            Text("Clean \(viewModel.selectedFileCount) files (\(viewModel.selectedSizeFormatted)) from \(viewModel.selectedItemCount) selected categories?\n\nSoft delete moves files to staging with 7-day undo window.")
+            Text(confirmMessage)
         }
         .sheet(isPresented: $viewModel.showCleanResult) {
             CleanResultSheet(result: viewModel.cleanResult)
         }
+        .sheet(isPresented: $viewModel.showActionResult) {
+            CleanResultSheet(result: viewModel.lastActionResult)
+        }
+    }
+}
+
+extension ScanView {
+    var confirmMessage: String {
+        var text = "Clean \(viewModel.selectedFileCount) items (\(viewModel.selectedSizeFormatted)) from \(viewModel.selectedItemCount) selected categories?\n\n"
+        text += "\"Move to Undo Area\" keeps them for 7 days so you can restore them from History. Disk space is freed when they expire or when you empty the undo area."
+        if viewModel.selectionIncludesTools {
+            text += "\n\nSome items are cleaned by their own tool (simctl, docker, go) and can't be undone."
+        }
+        return text
     }
 }
 
@@ -148,72 +172,28 @@ struct ScanResultsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Summary bar
             HStack(spacing: 24) {
-                HStack(spacing: 8) {
-                    Image(systemName: "externaldrive.fill")
-                        .foregroundStyle(TidyTheme.amber)
-                    VStack(alignment: .leading) {
-                        Text(result.totalReclaimableFormatted)
-                            .font(.title3)
-                            .fontWeight(.bold)
-                        Text("Reclaimable")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
+                SummaryStat(icon: "externaldrive.fill", color: TidyTheme.amber, value: result.totalReclaimableFormatted, label: "Reclaimable")
                 Divider().frame(height: 36)
-
-                HStack(spacing: 8) {
-                    Image(systemName: "doc.on.doc")
-                        .foregroundStyle(TidyTheme.sapphire)
-                    VStack(alignment: .leading) {
-                        Text("\(result.totalFiles)")
-                            .font(.title3)
-                            .fontWeight(.bold)
-                        Text("Files")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
+                SummaryStat(icon: "doc.on.doc", color: TidyTheme.sapphire, value: "\(result.totalFiles)", label: "Files")
                 Divider().frame(height: 36)
-
-                HStack(spacing: 8) {
-                    Image(systemName: "timer")
-                        .foregroundStyle(TidyTheme.emerald)
-                    VStack(alignment: .leading) {
-                        Text(String(format: "%.1fs", result.durationSecs))
-                            .font(.title3)
-                            .fontWeight(.bold)
-                        Text("Scan Time")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                SummaryStat(icon: "timer", color: TidyTheme.emerald, value: String(format: "%.1fs", result.durationSecs), label: "Scan Time")
 
                 Spacer()
 
-                // Select All / Deselect All
                 HStack(spacing: 8) {
                     Button("Select All") {
-                        viewModel.selectedItems = Set(result.items.map { $0.id })
+                        viewModel.selectedItems = Set(result.items.filter { $0.cleanable }.map { $0.id })
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.bordered).controlSize(.small)
 
                     Button("Safe Only") {
-                        viewModel.selectedItems = Set(result.items.filter { $0.safety == "Safe" }.map { $0.id })
+                        viewModel.selectedItems = Set(result.items.filter { $0.safety == "Safe" && $0.cleanable }.map { $0.id })
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.bordered).controlSize(.small)
 
-                    Button("None") {
-                        viewModel.selectedItems.removeAll()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    Button("None") { viewModel.selectedItems.removeAll() }
+                        .buttonStyle(.bordered).controlSize(.small)
                 }
 
                 Button {
@@ -231,8 +211,7 @@ struct ScanResultsView: View {
                 .disabled(viewModel.isCleaning || viewModel.selectedItems.isEmpty)
 
                 if viewModel.isCleaning {
-                    ProgressView()
-                        .scaleEffect(0.8)
+                    ProgressView().scaleEffect(0.8)
                 }
             }
             .padding()
@@ -240,57 +219,18 @@ struct ScanResultsView: View {
 
             Divider()
 
-            // Items list
             List {
-                let safeItems = result.items.filter { $0.safety == "Safe" }
-                let cautionItems = result.items.filter { $0.safety != "Safe" }
+                section(title: "Safe to Remove", icon: "checkmark.shield.fill", color: TidyTheme.emerald,
+                        items: result.items.filter { $0.safety == "Safe" && !$0.reviewOnly })
+                section(title: "Review Recommended", icon: "exclamationmark.triangle.fill", color: TidyTheme.amber,
+                        items: result.items.filter { $0.safety != "Safe" && !$0.reviewOnly })
+                section(title: "Large Files — review and remove one by one", icon: "doc.zipper", color: TidyTheme.sapphire,
+                        items: result.items.filter { $0.reviewOnly })
 
-                if !safeItems.isEmpty {
-                    Section {
-                        ForEach(safeItems) { item in
-                            ScanItemRow(item: item, isSelected: viewModel.selectedItems.contains(item.id)) {
-                                if viewModel.selectedItems.contains(item.id) {
-                                    viewModel.selectedItems.remove(item.id)
-                                } else {
-                                    viewModel.selectedItems.insert(item.id)
-                                }
-                            }
-                        }
-                    } header: {
-                        HStack {
-                            Image(systemName: "checkmark.shield.fill")
-                                .foregroundStyle(TidyTheme.emerald)
-                            Text("Safe to Remove")
-                                .fontWeight(.semibold)
-                            Spacer()
-                            let totalSafe = safeItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }
-                            Text(formatBytes(totalSafe))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if !cautionItems.isEmpty {
-                    Section {
-                        ForEach(cautionItems) { item in
-                            ScanItemRow(item: item, isSelected: viewModel.selectedItems.contains(item.id)) {
-                                if viewModel.selectedItems.contains(item.id) {
-                                    viewModel.selectedItems.remove(item.id)
-                                } else {
-                                    viewModel.selectedItems.insert(item.id)
-                                }
-                            }
-                        }
-                    } header: {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(TidyTheme.amber)
-                            Text("Review Recommended")
-                                .fontWeight(.semibold)
-                            Spacer()
-                            let totalCaution = cautionItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }
-                            Text(formatBytes(totalCaution))
-                                .foregroundStyle(.secondary)
+                if !result.errors.isEmpty {
+                    Section("Notes") {
+                        ForEach(result.errors, id: \.self) { e in
+                            Text(e).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -299,67 +239,128 @@ struct ScanResultsView: View {
         }
     }
 
+    @ViewBuilder
+    private func section(title: String, icon: String, color: Color, items: [ScanItem]) -> some View {
+        if !items.isEmpty {
+            Section {
+                ForEach(items) { item in
+                    ScanItemRow(item: item, viewModel: viewModel)
+                }
+            } header: {
+                HStack {
+                    Image(systemName: icon).foregroundStyle(color)
+                    Text(title).fontWeight(.semibold)
+                    Spacer()
+                    Text(formatBytes(items.reduce(UInt64(0)) { $0 + $1.sizeBytes }))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private func formatBytes(_ bytes: UInt64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: Int64(bytes))
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
+struct SummaryStat: View {
+    let icon: String
+    let color: Color
+    let value: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).foregroundStyle(color)
+            VStack(alignment: .leading) {
+                Text(value).font(.title3).fontWeight(.bold)
+                Text(label).font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
 struct ScanItemRow: View {
     let item: ScanItem
-    let isSelected: Bool
-    let onToggle: () -> Void
-    @State private var isHovered = false
+    @ObservedObject var viewModel: AppViewModel
+    @State private var expanded = false
+
+    private var isSelected: Bool { viewModel.selectedItems.contains(item.id) }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button(action: onToggle) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? TidyTheme.sapphire : .secondary)
-                    .font(.title3)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                if item.cleanable {
+                    Button {
+                        if isSelected { viewModel.selectedItems.remove(item.id) } else { viewModel.selectedItems.insert(item.id) }
+                    } label: {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(isSelected ? TidyTheme.sapphire : .secondary)
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isSelected ? "Selected" : "Not selected")
+                } else {
+                    Image(systemName: "eye").foregroundStyle(.secondary).font(.title3)
+                        .help("Review only — remove items individually below")
+                }
+
+                Image(systemName: item.icon)
+                    .foregroundStyle(safetyColor)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.name).fontWeight(.medium)
+                    Text(item.reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if let tool = item.toolAction {
+                        Label("Runs \(tool) — can't be undone", systemImage: "wrench.adjustable")
+                            .font(.caption2)
+                            .foregroundStyle(TidyTheme.amber)
+                    }
+                    if item.hasSharedBlocks {
+                        Label("About \(item.reclaimableFormatted) will actually be freed — the rest is shared with APFS clones", systemImage: "square.on.square")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(item.sizeFormatted).fontWeight(.semibold)
+                    Text("\(item.entryCount) items").font(.caption).foregroundStyle(.secondary)
+                }
+
+                SafetyBadge(safety: item.safety)
+
+                if !item.entries.isEmpty {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                    } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(expanded ? "Hide items" : "Show items")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isSelected ? "Selected" : "Not selected")
 
-            Image(systemName: item.icon)
-                .foregroundStyle(safetyColor)
-                .frame(width: 24)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.name)
-                    .fontWeight(.medium)
-                Text(item.reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(item.entries) { entry in
+                        EntryRow(entry: entry, item: item, viewModel: viewModel)
+                    }
+                    if item.entryCount > item.entries.count {
+                        Text("… and \(item.entryCount - item.entries.count) smaller items")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.leading, 48)
             }
-
-            Spacer()
-
-            // Size bar
-            GeometryReader { _ in
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(safetyColor.opacity(0.3))
-                    .frame(width: isHovered ? 60 : 50, height: 4)
-            }
-            .frame(width: 60, height: 4)
-
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(item.sizeFormatted)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.primary)
-                Text("\(item.fileCount) files")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            SafetyBadge(safety: item.safety)
         }
         .padding(.vertical, 4)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
-        }
     }
 
     private var safetyColor: Color {
@@ -367,6 +368,51 @@ struct ScanItemRow: View {
         case "Safe": return TidyTheme.emerald
         case "Caution": return TidyTheme.amber
         default: return TidyTheme.coral
+        }
+    }
+}
+
+struct EntryRow: View {
+    let entry: ScanEntry
+    let item: ScanItem
+    @ObservedObject var viewModel: AppViewModel
+    @State private var confirmRemove = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if item.cleanable {
+                let included = !viewModel.excludedEntries.contains(entry.path)
+                Button { viewModel.toggleEntry(entry.path) } label: {
+                    Image(systemName: included ? "checkmark.square" : "square")
+                        .foregroundStyle(included ? TidyTheme.sapphire : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(included ? "Will be cleaned — click to keep" : "Will be kept")
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.name).font(.caption)
+                Text(entry.path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Text(entry.sizeFormatted).font(.caption).foregroundStyle(.secondary)
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: entry.path)])
+            } label: { Image(systemName: "magnifyingglass") }
+                .buttonStyle(.plain)
+                .help("Show in Finder")
+            if item.reviewOnly {
+                Button("Remove…") { confirmRemove = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+            }
+        }
+        .alert("Remove \(entry.name)?", isPresented: $confirmRemove) {
+            Button("Cancel", role: .cancel) {}
+            Button("Move to Undo Area") {
+                viewModel.removeFiles([entry.path], label: "large file")
+            }
+        } message: {
+            Text("\(entry.sizeFormatted). You can restore it from History for 7 days.")
         }
     }
 }
@@ -439,60 +485,53 @@ struct CleanResultSheet: View {
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             if let result = result {
-                Image(systemName: result.errors.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 48))
-                    .foregroundStyle(result.errors.isEmpty ? TidyTheme.emerald : TidyTheme.amber)
+                if let error = result.error {
+                    Image(systemName: "xmark.octagon.fill").font(.system(size: 44)).foregroundStyle(TidyTheme.coral)
+                    Text("Nothing was cleaned").font(.title2).fontWeight(.bold)
+                    Text(error).multilineTextAlignment(.center).foregroundStyle(.secondary)
+                } else {
+                    let ok = result.errors.isEmpty
+                    Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 44))
+                        .foregroundStyle(ok ? TidyTheme.emerald : TidyTheme.amber)
 
-                Text("Clean Complete")
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    Text(result.mode == "dry_run" ? "Dry Run" : "Clean Complete")
+                        .font(.title2).fontWeight(.bold)
 
-                VStack(spacing: 8) {
-                    HStack {
-                        Text("Files removed:")
-                        Spacer()
-                        Text("\(result.filesRemoved)")
-                            .fontWeight(.semibold)
-                    }
-                    HStack {
-                        Text("Space freed:")
-                        Spacer()
-                        Text(result.bytesFreedFormatted)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(TidyTheme.emerald)
-                    }
-                    HStack {
-                        Text("Mode:")
-                        Spacer()
-                        Text(result.mode)
-                            .fontWeight(.semibold)
-                    }
-                    if let sid = result.sessionId {
-                        HStack {
-                            Text("Session:")
-                            Spacer()
-                            Text(sid)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    VStack(spacing: 8) {
+                        row("Items:", "\(result.filesRemoved)")
+                        if result.isSoftDelete {
+                            row("Moved to undo area:", result.bytesStagedFormatted, color: TidyTheme.sapphire)
+                            Text("Disk space is freed when the session expires or when you empty the undo area in History.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            row("Space freed:", result.bytesFreedFormatted, color: TidyTheme.emerald)
+                        }
+                        if let sid = result.sessionId {
+                            row("Session:", sid, color: .secondary)
                         }
                     }
-                }
-                .padding()
-                .background(TidyTheme.cardBackground, in: RoundedRectangle(cornerRadius: 8))
+                    .padding()
+                    .background(TidyTheme.cardBackground, in: RoundedRectangle(cornerRadius: 8))
 
-                if !result.errors.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Warnings:")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                        ForEach(result.errors, id: \.self) { error in
-                            Text("• \(error)")
-                                .font(.caption)
-                                .foregroundStyle(TidyTheme.amber)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            list("Ran (can't be undone)", result.toolActions, color: .secondary)
+                            list("Warnings", result.warnings, color: TidyTheme.amber)
+                            list("Errors", result.errors, color: TidyTheme.coral)
+                            if !result.skipped.isEmpty {
+                                Text("Skipped (\(result.skipped.count))").font(.caption).fontWeight(.semibold)
+                                ForEach(result.skipped.prefix(30)) { s in
+                                    Text("• \((s.path as NSString).abbreviatingWithTildeInPath) — \(s.reason)")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .frame(maxHeight: 200)
                 }
             }
 
@@ -500,7 +539,25 @@ struct CleanResultSheet: View {
                 .buttonStyle(.borderedProminent)
                 .tint(TidyTheme.emerald)
         }
-        .padding(32)
-        .frame(width: 400)
+        .padding(28)
+        .frame(width: 480)
+    }
+
+    private func row(_ label: String, _ value: String, color: Color = .primary) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value).fontWeight(.semibold).foregroundStyle(color).lineLimit(1).truncationMode(.middle)
+        }
+    }
+
+    @ViewBuilder
+    private func list(_ title: String, _ lines: [String], color: Color) -> some View {
+        if !lines.isEmpty {
+            Text(title).font(.caption).fontWeight(.semibold)
+            ForEach(lines, id: \.self) { l in
+                Text("• \(l)").font(.caption2).foregroundStyle(color)
+            }
+        }
     }
 }
