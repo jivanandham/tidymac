@@ -2,504 +2,350 @@
 
 # 🧹 TidyMac
 
-### Developer-Aware, Privacy-First Mac Cleanup Utility
+### Developer-Aware, Privacy-First macOS Cleanup & Storage Intelligence
 
-**Reclaim 20–50GB of hidden developer cache space with intelligence, safety, and style.**
+**Reclaim 20–50 GB of hidden developer cache space with mathematical safety, APFS awareness, and a native SwiftUI interface.**
 
 [![CI](https://github.com/jivanandham/tidymac/actions/workflows/ci.yml/badge.svg)](https://github.com/jivanandham/tidymac/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Homebrew](https://img.shields.io/badge/brew_install-tidymac-FBB040?logo=homebrew&logoColor=white)](https://github.com/jivanandham/homebrew-tidymac)
-[![Rust](https://img.shields.io/badge/Rust-1.70%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.75%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Swift](https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white)](https://swift.org)
 [![macOS](https://img.shields.io/badge/macOS-14%2B_Sonoma-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 
 <br>
 
 ```
-┌─────────────────────────────────────────────┐
-│  $ tidymac scan --profile developer         │
-│                                             │
-│  🔍 Scanning developer caches...           │
-│  ████████████████████████████░░  87%        │
-│                                             │
-│  📦 Xcode DerivedData     12.3 GB          │
-│  🐳 Docker images          8.1 GB          │
-│  📁 node_modules           5.7 GB          │
-│  🐍 Python venvs           3.2 GB          │
-│  📦 Cargo target           2.8 GB          │
-│  🍺 Homebrew cache         1.4 GB          │
-│  ─────────────────────────────────          │
-│  💾 Total reclaimable:    33.5 GB          │
-└─────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  $ tidymac scan --profile developer                    │
+│                                                        │
+│  🔍 Scanning developer caches & build artifacts...     │
+│  ████████████████████████████████████░░  88%           │
+│                                                        │
+│  📦 Xcode DerivedData                  12.3 GB         │
+│  🐳 Docker reclaimable (prune)          8.1 GB         │
+│  📁 node_modules (stale projects)       5.7 GB         │
+│  🐍 Python virtualenvs                  3.2 GB         │
+│  🦀 Cargo target directories            2.8 GB         │
+│  🍺 Homebrew download cache             1.4 GB         │
+│  ─────────────────────────────────────────────         │
+│  💾 Total Reclaimable:                 33.5 GB         │
+└────────────────────────────────────────────────────────┘
 ```
 
 </div>
 
 ---
 
-## ⚡ Install in 10 Seconds
+## ⚡ Quick Install
+
+### Homebrew (Recommended)
 
 ```bash
 brew tap jivanandham/tidymac && brew install tidymac
 ```
 
-<details>
-<summary>📦 Other installation methods</summary>
+### Download DMG Installer
 
-### From Source (Rust)
-```bash
-git clone https://github.com/jivanandham/tidymac.git
-cd tidymac && cargo build --release
-cp target/release/tidymac /usr/local/bin/
-```
-
-### Native macOS App (SwiftUI)
-```bash
-git clone https://github.com/jivanandham/tidymac.git
-cd tidymac
-cargo build --release && ./scripts/build-ffi.sh
-cd TidyMac && swift run TidyMacApp
-```
-
-### DMG Installer
+Download the latest signed release from [Releases](https://github.com/jivanandham/tidymac/releases) or build it locally:
 ```bash
 git clone https://github.com/jivanandham/tidymac.git
 cd tidymac && ./scripts/build-dmg.sh
-# → build/TidyMac.dmg
+# Creates build/TidyMac.dmg
+```
+
+<details>
+<summary>📦 Build from source</summary>
+
+#### Build CLI (Rust)
+```bash
+git clone https://github.com/jivanandham/tidymac.git
+cd tidymac
+cargo build --release
+sudo cp target/release/tidymac /usr/local/bin/
+```
+
+#### Run SwiftUI App (Xcode / SwiftPM)
+```bash
+cd tidymac
+./scripts/build-ffi.sh
+cd TidyMac && swift run TidyMacApp
 ```
 
 </details>
 
 ---
 
-## 🔥 Why TidyMac?
+## 💡 Why TidyMac?
 
-> **Mainstream cleaners treat every Mac the same.**
-> They don't understand developer workflows — and that's where the real space waste lives.
+> **Standard cleaners treat every Mac like an office laptop.**  
+> They wipe browser cookies and user caches, but leave tens of gigabytes of stale build artifacts, unlinked package trees, orphaned containers, and simulator runtimes untouched.
 
 <table>
 <tr>
 <td width="50%">
 
-### 🎯 Built for Developers
-
-- **14+ dev tool caches** detected automatically
-- Xcode DerivedData, Docker, `node_modules`, Python venvs, Cargo, CocoaPods, Gradle, Homebrew, pip, and more
-- Understands your workflow — won't delete active project files
+### 🎯 Developer-Aware
+- **14+ Developer Ecosystems**: Xcode DerivedData, iOS Simulators (via `xcrun simctl`), Android SDK/NDK, Cargo targets, Gradle, Maven, sbt, pip, poetry, conda, Go module caches, Homebrew, and Docker.
+- **Smart Stale Project Detection**: Distinguishes active workspaces from abandoned projects.
+- **System Data Explainer**: Uncovers what constitutes macOS "System Data" (snapshots, Xcode caches, swap, sleep images).
 
 </td>
 <td width="50%">
 
-### 🛡️ Safety First
-
-- **Dry-run mode** — preview before cleaning
-- **7-day undo** — soft delete moves items to `~/.tidymac/staging`; recover with `tidymac undo --last`
-  (space is freed when the session expires or with `tidymac purge`)
-- **One deletion engine** — every removal (cleans, uninstalls, privacy, duplicates) is checked by the
-  same safety guard right before it happens: canonical paths, case-insensitive, must be inside the
-  scanned folder, never a folder root
-- **Protected paths** — system folders, Keychains, iCloud Drive, Mail, Messages, Photos libraries,
-  `~/.ssh` and other credentials are never deletable; `~/Documents` & co. only for single files you pick
-- **In-use detection** — anything belonging to a running app is skipped
-- **No network code** — no telemetry, no crash reporter, no update pings
+### 🛡️ Ironclad Safety
+- **Single Deletion Engine**: Every clean, uninstall, and privacy wipe goes through a single safety pipeline with canonical path validation.
+- **Root-Safe & Non-Destructive**: Never deletes a target folder's root (e.g., `~/Library/Caches`). Only purges verified children.
+- **Protected Paths**: System roots, Keychains, iCloud Drive, Mail, Messages, Safari, Photos, and `.ssh` are permanently blocked.
+- **7-Day Undo Window**: Soft delete moves files to `~/.tidymac/staging` before permanent purge.
+- **100% Offline & Private**: Zero network calls, zero analytics, zero telemetry.
 
 </td>
 </tr>
 </table>
 
-### How TidyMac Compares
-
-Based on each tool's documented features (late 2026). ◐ = partial.
-
-| Feature | TidyMac | CleanMyMac 5 | Mole | AppCleaner |
-|:--------|:-------:|:------------:|:----:|:----------:|
-| Developer caches (Xcode, simulators via `simctl`, npm, Cargo, Go, Docker via `docker prune`…) | ✅ | ◐ Xcode | ✅ | ❌ |
-| Native GUI **and** scriptable CLI on one engine | ✅ | GUI only | CLI (+ paid GUI) | GUI only |
-| Review list before cleaning | ✅ per entry | ✅ | ✅ `--dry-run` | ✅ |
-| Undo after cleaning | ✅ staging + `tidymac undo` | ◐ some items to Trash | ❌ permanent | ◐ Trash |
-| APFS clone-aware "actually freed" sizes | ✅ | ❌ | ❌ | ❌ |
-| Custom rules in profile files | ✅ `[[rules]]` | ❌ | ◐ whitelist | ❌ |
-| Leftovers of uninstalled apps | ✅ | ✅ | ✅ | ❌ |
-| Disk map (treemap) | ✅ | ✅ | ◐ TUI | ❌ |
-| JSON output / scheduled reports | ✅ | ❌ | ✅ | ❌ |
-| No network code | ✅ | ❌ | ✅ | ✅ |
-| Price | Free, MIT | ~$40/yr | Free (CLI) | Free |
-
---------|:-------:|:---------:|:----------:|
-| Developer cache detection (14+ tools) | ✅ | ❌ | ❌ |
-| Native SwiftUI + CLI | ✅ | GUI only | GUI only |
-| Dry-run before cleaning | ✅ | ❌ | ❌ |
-| Undo with 7-day recovery | ✅ | ❌ | ❌ |
-| Smart cleanup profiles | ✅ 4 presets | ❌ | ❌ |
-| Perceptual image dedup | ✅ | ❌ | ❌ |
-| JSON/scripting output | ✅ | ❌ | ❌ |
-| Privacy audit (8 browsers) | ✅ | Partial | ❌ |
-| 100% offline, zero telemetry | ✅ | ❌ | ✅ |
-| Open source | ✅ Free | $40/yr | ✅ Free |
-
 ---
 
-## 🚀 Quick Start
+## 📊 Feature Comparison
 
-```bash
-# Initialize TidyMac
-tidymac config init
-
-# Your first scan — see what's reclaimable
-tidymac scan --profile developer
-
-# Preview what would be cleaned (dry-run)
-tidymac clean --profile developer --dry-run
-
-# Clean with 7-day undo safety net
-tidymac clean --profile developer
-```
-
----
-
-## 📖 Commands
-
-<details>
-<summary><b>🔍 Scanning</b> — Find reclaimable space</summary>
-
-```bash
-tidymac scan                              # Quick scan (caches, temp, trash)
-tidymac scan --profile developer          # Developer-focused scan
-tidymac scan --profile deep --detailed    # Deep scan with file paths
-tidymac scan --format json                # JSON output for scripting
-```
-
-</details>
-
-<details>
-<summary><b>🧹 Cleaning</b> — Reclaim disk space</summary>
-
-```bash
-tidymac clean --profile developer         # Soft delete (7-day undo window)
-tidymac clean --profile quick --hard      # Permanent deletion
-tidymac clean --dry-run                   # Preview what would be cleaned
-```
-
-</details>
-
-<details>
-<summary><b>↩️ Undo</b> — Recover cleaned files</summary>
-
-```bash
-tidymac undo --last                       # Restore last cleanup
-tidymac undo --list                       # View all recovery sessions
-tidymac undo --session 2026-02-15T19-30-00-123-ab12
-```
-
-</details>
-
-<details>
-<summary><b>🔎 Duplicate Detection</b> — Find duplicate files & images</summary>
-
-```bash
-tidymac dup ~/Documents                   # Find exact duplicates
-tidymac dup ~/Pictures --perceptual       # Find visually similar photos
-tidymac dup ~/Downloads --detailed        # Show file paths per group
-```
-
-**4-pass pipeline for speed:**
-```
-Pass 1: Group by file size ──► eliminates ~95% instantly
-Pass 2: Quick hash (4KB)   ──► eliminates ~4% more
-Pass 3: Full SHA-256       ──► confirms exact duplicates
-Pass 4: Perceptual hash    ──► finds visually similar images (optional)
-```
-
-</details>
-
-<details>
-<summary><b>📱 App Management</b> — Find and remove app leftovers</summary>
-
-```bash
-tidymac apps list --sort size             # List apps by total footprint
-tidymac apps info Slack                   # See app + all associated files
-tidymac apps remove Slack --dry-run       # Preview complete removal
-tidymac apps remove com.tinyspeck.slackmacgap   # Exact bundle id also works
-# Names must match exactly; folders matched only by name need --include-name-matches
-```
-
-</details>
-
-<details>
-<summary><b>⚙️ Startup Items</b> — Manage login items</summary>
-
-```bash
-tidymac startup list                      # Show all login/startup items
-tidymac startup disable com.docker.helper # Disable a startup item
-tidymac startup enable com.docker.helper  # Re-enable it
-```
-
-</details>
-
-<details>
-<summary><b>🔒 Privacy Audit</b> — Scan browser data & trackers</summary>
-
-```bash
-tidymac privacy scan                      # Full privacy audit
-tidymac privacy scan --browsers           # Browser data only
-tidymac privacy clean --dry-run           # Preview privacy cleanup
-```
-
-Supports: Chrome, Firefox, Safari, Brave, Edge, Arc, Vivaldi, Opera — cookies, history, local storage, cache, and tracking data.
-
-</details>
-
-<details>
-<summary><b>🗺 Disk Map & System Data</b> — Where did my space go?</summary>
-
-```bash
-tidymac map                               # Biggest folders in your home folder
-tidymac map ~/Library --depth 3 --top 20  # Drill into a folder
-tidymac system-data                       # Explain macOS "System Data"
-```
-
-</details>
-
-<details>
-<summary><b>🧩 Leftovers of uninstalled apps</b></summary>
-
-```bash
-tidymac apps orphans                              # List leftovers (conservative)
-tidymac apps orphans --clean com.example.oldapp   # Remove them (undoable)
-```
-
-</details>
-
-<details>
-<summary><b>⏰ Scheduled reports</b> — Dry runs on a schedule, never deletes</summary>
-
-```bash
-tidymac schedule install --profile developer --every weekly
-tidymac schedule status
-tidymac schedule remove
-```
-
-</details>
-
-<details>
-<summary><b>📊 Storage Visualization</b> — Disk usage overview</summary>
-
-```bash
-tidymac viz                               # Visual disk usage breakdown
-tidymac viz --format json                 # JSON for dashboards
-tidymac status                            # Overview of everything
-```
-
-</details>
-
-<details>
-<summary><b>🐳 Docker</b> — Manage and prune Docker resources</summary>
-
-```bash
-tidymac docker                            # Show Docker disk usage
-tidymac docker --prune                    # Prune dangling images, containers, volumes
-tidymac docker --prune --dry-run          # Preview what would be reclaimed
-```
-
-</details>
-
-<details>
-<summary><b>🔥 Purge</b> — Manage staging area and auto-purge</summary>
-
-```bash
-tidymac purge --expired                   # Purge expired sessions from staging
-tidymac purge --all                       # Permanently purge ALL sessions
-tidymac purge --install-auto              # Install launchd plist for daily auto-purge
-```
-
-</details>
-
-<details>
-<summary><b>⚙️ Configuration</b> — Manage TidyMac settings</summary>
-
-```bash
-tidymac config init                       # Initialize config at ~/.tidymac
-tidymac config show                       # Show current configuration
-tidymac config set stale_days 30          # Update a configuration value
-tidymac config clear-cache                # Clear the scan cache
-```
-
-</details>
-
----
-
-## 🎛️ Smart Profiles
-
-| Profile | Aggression | What It Cleans | Best For |
-|:--------|:----------:|:---------------|:---------|
-| 🟢 `quick` | Low | Caches, temp files, trash | Daily maintenance |
-| 🟡 `developer` | Medium | + 14 dev tool caches | After coding sessions |
-| 🟠 `creative` | Medium | + Render files, previews | After creative projects |
-| 🔴 `deep` | High | Everything + large files | Monthly deep clean |
-
-> 💡 Create custom profiles in `~/.tidymac/profiles/<name>.toml`, including your own
-> `[[rules]]` (paths, minimum age/size, extensions). See `profiles/custom_example.toml`.
-> `tidymac clean` only includes **Safe** items unless you pass `--max-safety caution`.
+| Capability | TidyMac | CleanMyMac X / 5 | DaisyDisk | AppCleaner |
+| :--- | :---: | :---: | :---: | :---: |
+| **Developer Caches (Xcode, Simulators, Cargo, Go, npm)** | ✅ Built-in (14+) | ⚠️ Basic Xcode only | ❌ Manual | ❌ |
+| **Combined Native GUI (SwiftUI) & Scriptable CLI** | ✅ Single engine | ❌ GUI only | ❌ GUI only | ❌ GUI only |
+| **Safety Guardrails & Blocklists (Keychains, Mail, Cloud)** | ✅ Strict root-scoped | ⚠️ Partial | ❌ | ⚠️ Partial |
+| **7-Day Soft-Delete & Staging Undo** | ✅ `tidymac undo` | ⚠️ Trash only | ❌ | ⚠️ Trash only |
+| **APFS Clone-Aware Accurate Sizing** | ✅ | ❌ | ❌ | ❌ |
+| **Visual Treemap / Disk Map** | ✅ Drill-down | ⚠️ Bubble graph | ✅ Starburst | ❌ |
+| **Orphaned App Leftovers Detection** | ✅ Receipt-aware | ✅ | ❌ | ⚠️ Interactive only |
+| **Zero Telemetry / 100% Offline** | ✅ Open source | ❌ Cloud telemetry | ❌ Tracking | ✅ |
+| **License & Price** | **Free (MIT)** | ~$40 / yr | $9.99 | Free (Closed) |
 
 ---
 
 ## 🖥️ Native macOS App (SwiftUI)
 
-TidyMac includes a **native SwiftUI application** that wraps the high-performance Rust core via C FFI bindings.
+TidyMac provides a high-performance native macOS interface connected directly to the Rust core via zero-overhead C FFI bindings:
 
-| View | Description |
-|:-----|:------------|
-| 📊 **Dashboard** | Disk usage overview and quick actions |
-| 🔍 **Scan** | Run and visualize scan results |
-| 📱 **Apps** | Browse installed apps and their footprint |
-| 🐳 **Docker** | Manage Docker images, containers, and volumes |
-| 🔒 **Privacy** | Audit browser cookies, history, and trackers |
-| 📜 **History** | Review past cleanup sessions with undo |
-| ⚙️ **Settings** | Configure profiles, thresholds, and preferences |
-
-<details>
-<summary><b>🏗️ Architecture: How Swift Talks to Rust</b></summary>
-
-```
-┌──────────────────────────────────────────┐
-│          SwiftUI App (TidyMac)           │
-│   Dashboard │ Scan │ Apps │ Privacy │…   │
-├──────────────────────────────────────────┤
-│         TidyMacBridge.swift              │  ← Swift ↔ C bridge
-├──────────────────────────────────────────┤
-│       TidyMacFFI (C headers)             │  ← module.modulemap + tidymac.h
-├──────────────────────────────────────────┤
-│      libtidymac.dylib (Rust)             │  ← Compiled Rust core
-├──────────────────────────────────────────┤
-│          Rust Core Engine                │
-│  Scanner │ Cleaner │ Hasher │ Privacy    │
-│  Profiles │ Apps │ Startup │ Viz         │
-└──────────────────────────────────────────┘
-```
-
-</details>
+| View | Purpose |
+| :--- | :--- |
+| 📊 **Dashboard** | Storage overview, quick stats, and one-click maintenance triggers |
+| 🔍 **Scan & Clean** | Categorized review of system, developer, and application caches with per-item toggles |
+| 🗺️ **Disk Map** | Interactive APFS-aware squarified treemap with drill-down exploration |
+| 👥 **Duplicates** | 4-pass duplicate scanner with perceptual image similarity matching |
+| 📱 **App Uninstaller** | Comprehensive application footprint review and clean uninstaller |
+| 🧩 **Leftovers** | Detect and reclaim residue from previously uninstalled applications |
+| 🐳 **Docker** | Safe daemon-integrated disk usage audit and pruning |
+| 🔒 **Privacy** | Cookie, local storage, history, and cache cleaner for 8 major browsers |
+| 📜 **History & Undo** | Review prior cleaning sessions with instant single-click restoration |
+| ⚙️ **Settings** | Safety thresholds, custom profiles, scheduled runs, and exclusion lists |
 
 ---
 
-## 🏗️ Project Structure
+## ⌨️ Command Line Interface
 
-<details>
-<summary>Click to expand</summary>
+### 🔍 Scanning
+```bash
+# Standard scan across user caches and temporary data
+tidymac scan
+
+# Scan with developer profile (Xcode, Docker, node_modules, etc.)
+tidymac scan --profile developer
+
+# Deep scan with individual file paths
+tidymac scan --profile deep --detailed
+
+# Output raw JSON for automation or scripting
+tidymac scan --format json
+```
+
+### 🧹 Cleaning & Recovery
+```bash
+# Dry run: preview what would be cleaned without modifying anything
+tidymac clean --profile developer --dry-run
+
+# Clean with 7-day undo staging safety net (default)
+tidymac clean --profile developer
+
+# Hard clean (permanently delete immediately)
+tidymac clean --profile quick --hard
+
+# Restore the most recent cleanup session
+tidymac undo --last
+
+# List recovery sessions or restore a specific session
+tidymac undo --list
+tidymac undo --session <session-id>
+```
+
+### 🗺️ Storage Analysis & Treemap
+```bash
+# Largest directories in your home folder
+tidymac map
+
+# Drill down into a specific directory up to 3 levels deep
+tidymac map ~/Library --depth 3 --top 20
+
+# Explain hidden macOS "System Data" components
+tidymac system-data
+```
+
+### 👥 Duplicate Detection
+```bash
+# Find exact duplicate files (fast 3-pass hash)
+tidymac dup ~/Documents
+
+# Find visually similar photos using perceptual image hashing
+tidymac dup ~/Pictures --perceptual
+
+# Detailed duplicate report with paths
+tidymac dup ~/Downloads --detailed
+```
+
+### 📱 Applications & Leftovers
+```bash
+# List installed applications sorted by total footprint
+tidymac apps list --sort size
+
+# Inspect an application's associated containers, caches, and preferences
+tidymac apps info "Slack"
+
+# Completely remove an application and its associated files
+tidymac apps remove "Slack" --dry-run
+tidymac apps remove com.tinyspeck.slackmacgap
+
+# Discover residue left behind by uninstalled applications
+tidymac apps orphans
+
+# Safely clean orphaned leftover files
+tidymac apps orphans --clean com.example.oldapp
+```
+
+### 🔒 Privacy Audit
+```bash
+# Scan browser privacy data across 8 major browsers
+tidymac privacy scan
+
+# Preview privacy data cleanup (cookies, cache, history, trackers)
+tidymac privacy clean --dry-run
+```
+*Supported browsers: Chrome, Safari, Firefox, Arc, Brave, Edge, Opera, and Vivaldi.*
+
+### ⏰ Scheduling & Maintenance
+```bash
+# Install a weekly dry-run report via user launchd
+tidymac schedule install --profile developer --every weekly
+
+# Check scheduled report status
+tidymac schedule status
+
+# Remove scheduled background runs
+tidymac schedule remove
+
+# Purge expired items from the 7-day staging area
+tidymac purge --expired
+```
+
+---
+
+## 🎛️ Cleanup Profiles
+
+TidyMac comes with four built-in profiles and supports fully customized user rules:
+
+| Profile | Level | Scope | Typical Use Case |
+| :--- | :---: | :--- | :--- |
+| 🟢 `quick` | Conservative | User caches, system logs, trash, `$TMPDIR` | Daily upkeep |
+| 🟡 `developer` | Balanced | Dev tool caches, DerivedData, build directories, Docker | Post-coding sessions |
+| 🟠 `creative` | Balanced | Audio/video scratch disks, render caches, image previews | Media editing workflows |
+| 🔴 `deep` | Thorough | Complete scan including large files and unlinked runtimes | Monthly deep recovery |
+
+Custom profile definitions can be placed in `~/.tidymac/profiles/<name>.toml`:
+```toml
+name = "custom"
+description = "Personal workflow rules"
+
+[[rules]]
+path = "~/Downloads"
+min_age_days = 30
+min_size_mb = 100
+extensions = ["dmg", "pkg", "iso"]
+```
+
+---
+
+## 🏗️ Architecture & Internals
+
+```
+┌────────────────────────────────────────────────────────┐
+│               Native SwiftUI Frontend                  │
+│   Dashboard │ Scan │ Map │ Duplicates │ Apps │ Privacy │
+├────────────────────────────────────────────────────────┤
+│                 TidyMacBridge.swift                    │  ← Swift ↔ C FFI
+├────────────────────────────────────────────────────────┤
+│               tidymac.h / module.modulemap             │  ← C Declarations
+├────────────────────────────────────────────────────────┤
+│                 libtidymac.dylib                       │  ← Compiled Rust Core
+├────────────────────────────────────────────────────────┤
+│                    Rust Core Engine                    │
+│   • scanner (Walker, DevDetector, Targets, Caching)    │
+│   • cleaner (Deleter, Staging, Manifest, Safety)       │
+│   • duplicates (SizeGroup, FastHash, SHA-256, pHash)   │
+│   • apps (Detector, Receipts, Uninstaller, Orphans)    │
+│   • viz (Treemap, APFS Clones, System Data)            │
+│   • privacy (Browsers, Cookies, Storage, Cleaner)      │
+└────────────────────────────────────────────────────────┘
+```
+
+### Project Structure
 
 ```
 tidymac/
-├── Cargo.toml               # Rust package manifest
-├── src/                     # ⚙️ Rust core engine
-│   ├── main.rs              # CLI entry point & command routing
-│   ├── lib.rs               # Library root (FFI-ready)
+├── Cargo.toml               # Rust dependencies and configuration
+├── src/                     # Core Rust implementation
+│   ├── main.rs              # CLI entry point and subcommands
+│   ├── lib.rs               # Library root
 │   ├── ffi.rs               # C FFI exports for SwiftUI
-│   ├── cli/                 # Argument parsing & output formatting
-│   ├── scanner/             # File system scanning engine
-│   ├── cleaner/             # Cleaning with staging & undo
-│   ├── duplicates/          # Duplicate detection (SHA-256 + perceptual)
-│   ├── apps/                # App discovery & uninstaller
-│   ├── startup/             # Startup items manager
-│   ├── privacy/             # Privacy audit (8 browsers)
-│   ├── viz/                 # Storage visualization
-│   ├── profiles/            # Smart profile system
-│   └── common/              # Shared utilities & safety guards
-├── ffi/                     # 🔗 C header for FFI bridge
-│   └── tidymac.h
-├── TidyMac/                 # 🖥️ SwiftUI macOS app
-│   ├── Package.swift        # Swift Package Manager manifest
-│   ├── Sources/             # Swift source files (7 views)
-│   └── Libraries/           # FFI artifacts (dylib, header, modulemap)
-├── profiles/                # 📋 Built-in cleanup profiles (TOML)
-├── scripts/                 # 🛠️ Build & release automation
-├── tests/                   # ✅ Integration & unit tests
-└── .github/workflows/       # 🔄 CI/CD pipelines
+│   ├── apps/                # App discovery, receipts, uninstaller, orphans
+│   ├── cleaner/             # Safety-checked deleter, staging, purge, undo
+│   ├── cli/                 # Argument parsing and formatting
+│   ├── common/              # APFS helpers, permissions, config, safety guard
+│   ├── duplicates/          # 4-pass duplicate & perceptual image matching
+│   ├── privacy/             # Multi-browser privacy scanner & cleaner
+│   ├── profiles/            # Built-in and custom profile parsers
+│   ├── scanner/             # Walker, developer detection, target catalog
+│   ├── startup/             # Login item manager
+│   └── viz/                 # Squarified treemap & System Data inspector
+├── TidyMac/                 # Native SwiftUI Application
+│   ├── Package.swift        # Swift package manifest
+│   ├── Sources/             # SwiftUI views, view models, and bridge
+│   ├── Libraries/           # FFI dylib, C headers, and modulemap
+│   └── Tests/               # Swift test suite
+├── ffi/                     # C header definitions
+├── profiles/                # Default profile presets
+├── scripts/                 # Build, FFI, and DMG packaging scripts
+└── tests/                   # Rust integration tests
 ```
-
-</details>
 
 ---
 
-## 🔧 Building from Source
+## 🛠️ Development & Testing
 
-### Prerequisites
-
-| Requirement | Version | Notes |
-|:------------|:--------|:------|
-| macOS | 14+ (Sonoma) | Required for SwiftUI app |
-| Rust | 1.70+ | [Install via rustup](https://rustup.rs) |
-| Swift | 5.9+ | Included with Xcode 15+ |
-| Full Disk Access | — | Recommended for complete scanning |
-
+### Running Tests
 ```bash
-# CLI only
-cargo build --release
+# Run Rust unit and integration test suite
+cargo test
 
-# SwiftUI app
-cargo build --release && ./scripts/build-ffi.sh
-cd TidyMac && swift run TidyMacApp
+# Run Swift bridge and model tests
+cd TidyMac && swift test
+```
 
-# DMG installer
+### Full DMG Build Pipeline
+```bash
+# Builds native Rust FFI dylib, compiles Swift app, code signs, and produces DMG
 ./scripts/build-dmg.sh
 ```
 
 ---
 
-## ✅ Testing
-
-```bash
-cargo test --all-targets      # Rust unit + integration tests
-cd TidyMac && swift test      # Swift model/treemap tests (after ./scripts/build-ffi.sh)
-```
-
-CI fails on any test failure, Clippy warning, or formatting difference.
-
-### Signing for personal use
-
-macOS ties Full Disk Access to the app's code signature. An ad-hoc signed build
-loses the permission on every rebuild, so `build-dmg.sh` picks up your
-**Apple Development** certificate automatically (free: Xcode › Settings ›
-Accounts › Manage Certificates › +). Set `CODESIGN_IDENTITY` to override and
-`NOTARY_PROFILE` to notarize with a Developer ID.
-
----
-
-## 🗺️ Roadmap
-
-- [x] 🦀 **Rust CLI** — Full-featured command-line interface
-- [x] 🖥️ **SwiftUI GUI** — Native macOS app via Rust FFI
-- [x] 🍺 **Homebrew formula** — `brew tap jivanandham/tidymac && brew install tidymac`
-- [x] ⚡ **Incremental scan caching** — Only re-scan changed files
-- [x] 🐳 **Docker integration** — `docker system prune` integration
-- [x] ⏰ **Scheduled reports** — Dry-run profiles via launchd
-- [x] 📌 **Menu bar extra** — Free space and quick actions
-- [x] 🗺 **Disk map** — Treemap with drill-down
-- [x] 🧩 **Orphaned leftovers** — With Homebrew zap and pkgutil receipts
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how to get started:
-
-```bash
-# 1. Fork & clone
-git clone https://github.com/<your-username>/tidymac.git
-cd tidymac
-
-# 2. Run tests
-cargo test
-
-# 3. Make your changes & submit a PR
-```
-
----
-
-<div align="center">
-
 ## 📄 License
 
-MIT — Built with ❤️ by [Jeeva](https://github.com/jivanandham)
-
-**If TidyMac saved you disk space, give it a ⭐!**
-
-</div>
+This project is licensed under the [MIT License](LICENSE). Built with ❤️ for the macOS developer community.
