@@ -22,12 +22,15 @@ let package = Package(
             path: "Sources",
             linkerSettings: [
                 .unsafeFlags([
+                    "-L", "Libraries",
                     "-L", "../target/release",
                     "-L", "../target/debug",
                     "-ltidymac",
                     "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib",
+                    "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
                     "-Xlinker", "-rpath", "-Xlinker", "../target/release",
                     "-Xlinker", "-rpath", "-Xlinker", "../target/debug",
+                    "-Xlinker", "-rpath", "-Xlinker", "Libraries",
                 ]),
             ]
         ),

@@ -37,15 +37,14 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @State private var selectedItem: SidebarItem = .dashboard
     @StateObject private var viewModel = AppViewModel()
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(selection: $selectedItem)
+            SidebarView(selection: $viewModel.selectedTab)
         } detail: {
             Group {
-                switch selectedItem {
+                switch viewModel.selectedTab {
                 case .dashboard:
                     DashboardView(viewModel: viewModel)
                 case .scan:
@@ -76,22 +75,28 @@ struct SidebarView: View {
     @State private var hoveredItem: SidebarItem?
 
     var body: some View {
-        List(SidebarItem.allCases, selection: $selection) { item in
-            HStack(spacing: 10) {
-                Image(systemName: item.icon)
-                    .foregroundStyle(selection == item ? item.accentColor : .secondary)
-                    .frame(width: 22)
-                    .font(.system(size: 14))
-                Text(item.rawValue)
-                    .font(.system(size: 13))
-                Spacer()
-                if selection == item {
-                    Circle()
-                        .fill(item.accentColor)
-                        .frame(width: 6, height: 6)
+        List(SidebarItem.allCases, id: \.self, selection: $selection) { item in
+            Button {
+                selection = item
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: item.icon)
+                        .foregroundStyle(selection == item ? item.accentColor : .secondary)
+                        .frame(width: 22)
+                        .font(.system(size: 14))
+                    Text(item.rawValue)
+                        .font(.system(size: 13))
+                    Spacer()
+                    if selection == item {
+                        Circle()
+                            .fill(item.accentColor)
+                            .frame(width: 6, height: 6)
+                    }
                 }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 3)
+            .buttonStyle(.plain)
             .tag(item)
         }
         .listStyle(.sidebar)

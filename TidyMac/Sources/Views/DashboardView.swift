@@ -137,6 +137,7 @@ struct DashboardView: View {
                             gradient: TidyTheme.primaryGradient
                         ) {
                             viewModel.selectedProfile = "quick"
+                            viewModel.selectedTab = .scan
                             viewModel.runScan()
                         }
 
@@ -147,6 +148,7 @@ struct DashboardView: View {
                             gradient: TidyTheme.purpleGradient
                         ) {
                             viewModel.selectedProfile = "developer"
+                            viewModel.selectedTab = .scan
                             viewModel.runScan()
                         }
 
@@ -157,6 +159,7 @@ struct DashboardView: View {
                             gradient: TidyTheme.warningGradient
                         ) {
                             viewModel.selectedProfile = "deep"
+                            viewModel.selectedTab = .scan
                             viewModel.runScan()
                         }
 
@@ -166,6 +169,7 @@ struct DashboardView: View {
                             icon: "lock.shield",
                             gradient: TidyTheme.scanGradient
                         ) {
+                            viewModel.selectedTab = .privacy
                             viewModel.loadPrivacy()
                         }
                     }

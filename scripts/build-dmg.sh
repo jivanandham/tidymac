@@ -25,34 +25,44 @@ mkdir -p "$BUILD_DIR"
 echo "🔨 Step 1: Building Rust FFI library..."
 cd "$PROJECT_DIR"
 
-# Build for current architecture
-echo "   Building native $(uname -m)..."
-cargo build --release --lib
-
-# Optional: Try building for the other architecture (universal)
-# (If it fails, we still have the native build)
-OTHER_ARCH=""
 IS_UNIVERSAL=false
-if [ "$(uname -m)" == "arm64" ]; then
-    OTHER_ARCH="x86_64-apple-darwin"
-else
-    OTHER_ARCH="aarch64-apple-darwin"
-fi
+if command -v cargo >/dev/null 2>&1; then
+    # Build for current architecture
+    echo "   Building native $(uname -m)..."
+    cargo build --release --lib
 
-echo "   Attempting universal build (trying $OTHER_ARCH)..."
-if cargo build --release --lib --target "$OTHER_ARCH" 2>/dev/null; then
-    echo "   Creating universal dylib with lipo..."
-    mkdir -p "$PROJECT_DIR/target/universal"
-    lipo -create \
-        "$PROJECT_DIR/target/release/libtidymac.dylib" \
-        "$PROJECT_DIR/target/$OTHER_ARCH/release/libtidymac.dylib" \
-        -output "$PROJECT_DIR/target/universal/libtidymac.dylib"
-    DYLIB_SRC="$PROJECT_DIR/target/universal/libtidymac.dylib"
-    IS_UNIVERSAL=true
+    OTHER_ARCH=""
+    if [ "$(uname -m)" == "arm64" ]; then
+        OTHER_ARCH="x86_64-apple-darwin"
+    else
+        OTHER_ARCH="aarch64-apple-darwin"
+    fi
+
+    echo "   Attempting universal build (trying $OTHER_ARCH)..."
+    if cargo build --release --lib --target "$OTHER_ARCH" 2>/dev/null; then
+        echo "   Creating universal dylib with lipo..."
+        mkdir -p "$PROJECT_DIR/target/universal"
+        lipo -create \
+            "$PROJECT_DIR/target/release/libtidymac.dylib" \
+            "$PROJECT_DIR/target/$OTHER_ARCH/release/libtidymac.dylib" \
+            -output "$PROJECT_DIR/target/universal/libtidymac.dylib"
+        DYLIB_SRC="$PROJECT_DIR/target/universal/libtidymac.dylib"
+        IS_UNIVERSAL=true
+    else
+        echo "   ⚠️  Could not build for $OTHER_ARCH. Defaulting to native build."
+        DYLIB_SRC="$PROJECT_DIR/target/release/libtidymac.dylib"
+        IS_UNIVERSAL=false
+    fi
 else
-    echo "   ⚠️  Could not build for $OTHER_ARCH. Defaulting to native build."
-    DYLIB_SRC="$PROJECT_DIR/target/release/libtidymac.dylib"
-    IS_UNIVERSAL=false
+    echo "   ℹ️  cargo not found in PATH, using prebuilt dylib..."
+    if [ -f "$PROJECT_DIR/target/release/libtidymac.dylib" ]; then
+        DYLIB_SRC="$PROJECT_DIR/target/release/libtidymac.dylib"
+    elif [ -f "$APP_DIR/Libraries/libtidymac.dylib" ]; then
+        DYLIB_SRC="$APP_DIR/Libraries/libtidymac.dylib"
+    else
+        echo "❌ Rust dylib not found."
+        exit 1
+    fi
 fi
 
 if [ ! -f "$DYLIB_SRC" ]; then
@@ -83,11 +93,21 @@ if [ "$IS_UNIVERSAL" = true ]; then
 else
     echo "   Building native Swift app..."
     swift build -c release
-    SWIFT_BIN="$APP_DIR/.build/release/TidyMacApp"
+    if [ -f "$APP_DIR/.build/out/Products/Release/TidyMacApp" ]; then
+        SWIFT_BIN="$APP_DIR/.build/out/Products/Release/TidyMacApp"
+    elif [ -f "$APP_DIR/.build/release/TidyMacApp" ]; then
+        SWIFT_BIN="$APP_DIR/.build/release/TidyMacApp"
+    fi
     echo "   ✅ Native Swift app built"
 fi
 
-if [ ! -f "$SWIFT_BIN" ]; then
+if [ -z "$SWIFT_BIN" ] || [ ! -f "$SWIFT_BIN" ]; then
+    if [ -f "$APP_DIR/.build/out/Products/Release/TidyMacApp" ]; then
+        SWIFT_BIN="$APP_DIR/.build/out/Products/Release/TidyMacApp"
+    fi
+fi
+
+if [ -z "$SWIFT_BIN" ] || [ ! -f "$SWIFT_BIN" ]; then
     echo "❌ Swift binary not found at $SWIFT_BIN"
     exit 1
 fi

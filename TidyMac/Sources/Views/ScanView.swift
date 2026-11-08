@@ -402,27 +402,34 @@ struct PermissionBanner: View {
         HStack(spacing: 16) {
             Image(systemName: "lock.shield.fill")
                 .font(.system(size: 24))
-                .foregroundStyle(TidyTheme.amber)
+                .foregroundStyle(TidyTheme.sapphire)
             
             VStack(alignment: .leading, spacing: 2) {
-                Text("Sandbox Access Required")
+                Text("Full Disk Access Recommended")
                     .fontWeight(.bold)
-                Text("TidyMac is sandboxed for your security. Please grant access to your Home folder or specific directories to start cleaning.")
+                Text("Grant Full Disk Access in macOS System Settings for deep cleaning of browser data and system logs.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             
             Spacer()
             
-            Button("Grant Access...") {
-                viewModel.requestFolderAccess()
+            Button("Open Settings") {
+                viewModel.openFullDiskAccessSettings()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(TidyTheme.sapphire)
+            .controlSize(.regular)
+
+            Button("Refresh") {
+                viewModel.checkFullDiskAccess()
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
         }
         .padding()
-        .background(TidyTheme.amber.opacity(0.1))
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(TidyTheme.amber.opacity(0.2)), alignment: .bottom)
+        .background(TidyTheme.sapphire.opacity(0.08))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(TidyTheme.sapphire.opacity(0.15)), alignment: .bottom)
         .animation(.spring(), value: viewModel.hasFullDiskAccess)
     }
 }

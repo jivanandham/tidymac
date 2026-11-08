@@ -3,7 +3,10 @@ import Combine
 
 @MainActor
 class AppViewModel: ObservableObject {
-    // MARK: - App Sandbox Bookmarks
+    // MARK: - Navigation
+    @Published var selectedTab: SidebarItem = .dashboard
+    
+    // MARK: - Permissions
     @Published var hasFullDiskAccess = false
     @Published var selectedFolders: [URL] = []
     
@@ -82,6 +85,7 @@ class AppViewModel: ObservableObject {
     private let bridge = TidyMacBridge.shared
 
     init() {
+        checkFullDiskAccess()
         loadSavedBookmarks()
         loadProfiles()
         loadDiskUsage()
@@ -254,6 +258,21 @@ class AppViewModel: ObservableObject {
         }
     }
     
+    func navigateTo(_ tab: SidebarItem) {
+        selectedTab = tab
+    }
+
+    func checkFullDiskAccess() {
+        let safariPath = ("~/Library/Safari" as NSString).expandingTildeInPath
+        self.hasFullDiskAccess = FileManager.default.isReadableFile(atPath: safariPath)
+    }
+
+    func openFullDiskAccessSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     // MARK: - Security Scoped Bookmarks
     
     func requestFolderAccess() {
